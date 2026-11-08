@@ -150,6 +150,7 @@ message NoteSyncModifyMessage {
     int64 ctime = 5;
     int64 mtime = 6;
     int64 lastTime = 7;
+    string baseHash = 8;
 }
 
 message NoteSyncDeleteMessage {
@@ -200,6 +201,7 @@ message NoteModifyAckMessage {
     int64 lastTime = 1;
     string path = 2;
     string pathHash = 3;
+    string contentHash = 4;
 }
 
 message NoteRenameAckMessage {

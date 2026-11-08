@@ -2,10 +2,12 @@ package websocket_router
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
+	"github.com/haierkeys/fast-note-sync-service/internal/service"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	"github.com/haierkeys/fast-note-sync-service/pkg/convert"
@@ -79,9 +81,17 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		return
 	}
 
+	if params.MergeProtocol != 0 {
+		h.reliableNoteModify(c, params)
+		return
+	}
 	pkgapp.NoteModifyLog(c.TraceID, c.User.UID, "NoteModify", params.Path, params.Vault)
 
-	ctx := c.Context()
+	// Lock this note for the whole read -> CAS -> write -> broadcast sequence, so two uploads with the same
+	// baseHash cannot both pass the CAS, and broadcast order equals write order.
+	// 对该笔记加锁，覆盖「读 -> CAS -> 写库 -> 广播」整段：同 baseHash 的两个上传不可能同时通过 CAS，广播顺序等于写入顺序。
+	ctx, unlockNote := service.LockNote(c.Context(), c.User.UID, params.Vault, params.PathHash)
+	defer unlockNote()
 
 	noteSvc := h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion())
 
@@ -129,10 +139,10 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 			}
 
 			// =========================================================================
-			// Hard Conflict Protection: 
-			// If strategy is manualMerge, the request has no resolution mark, and serverHash 
+			// Hard Conflict Protection:
+			// If strategy is manualMerge, the request has no resolution mark, and serverHash
 			// differs from baseHash, block the override immediately and return 530.
-			// 
+			//
 			// 硬冲突保护：
 			// 如果合并策略为手动合并，请求中未携带解决标记，且云端哈希与客户端基准哈希不匹配，
 			// 直接拦截该覆写并返回 530 错误及冲突明细。
@@ -429,6 +439,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 				Ctime:            note.Ctime,
 				Mtime:            note.Mtime,
 				UpdatedTimestamp: note.UpdatedTimestamp,
+				MergeProtocol:    1, Revision: service.NoteRevision(note.UpdatedTimestamp), ContentDigest: service.NoteDigest(note.Content),
 			},
 		).WithVault(params.Vault), isExcludeSelf, NoteSyncModify)
 		return
@@ -442,6 +453,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 				Ctime:            nodeCheck.Ctime,
 				Mtime:            nodeCheck.Mtime,
 				UpdatedTimestamp: nodeCheck.UpdatedTimestamp,
+				MergeProtocol:    1, Revision: service.NoteRevision(nodeCheck.UpdatedTimestamp), ContentDigest: service.NoteDigest(nodeCheck.Content),
 			},
 		).WithVault(params.Vault), NoteSyncMtime)
 		return
@@ -528,6 +540,7 @@ func (h *NoteWSHandler) NoteModifyCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 				Ctime:            nodeCheck.Ctime,
 				Mtime:            nodeCheck.Mtime,
 				UpdatedTimestamp: nodeCheck.UpdatedTimestamp,
+				MergeProtocol:    1, Revision: service.NoteRevision(nodeCheck.UpdatedTimestamp), ContentDigest: service.NoteDigest(nodeCheck.Content),
 			},
 		), NoteSyncMtime)
 		return
@@ -576,18 +589,31 @@ func (h *NoteWSHandler) NoteDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	// 检查并创建仓库，内部使用SF合并并发请求, 避免重复创建问题
 	h.App.VaultService.GetOrCreate(ctx, c.User.UID, params.Vault)
 
-	note, err := noteSvc.Delete(ctx, c.User.UID, params)
-
-	if err != nil {
-		h.respondError(c, code.ErrorNoteDeleteFailed, err, "websocket_router.note.handleNoteDelete.Delete")
-		return
+	var note *dto.NoteDTO
+	var err error
+	if params.MergeProtocol != 0 {
+		result, mutationErr := service.ApplyReliableMutation(ctx, noteSvc, c.User.UID, &service.ReliableMutationRequest{
+			MergeProtocol: params.MergeProtocol, RequestID: params.RequestID, BaseRevision: params.BaseRevision, Kind: "delete", Vault: params.Vault, Path: params.Path, PathHash: params.PathHash,
+		})
+		if mutationErr != nil {
+			h.respondError(c, code.ErrorNoteDeleteFailed, mutationErr, "NoteDelete.ReliableMutation")
+			return
+		}
+		c.ToResponse(code.Success.WithData(result).WithVault(params.Vault).WithContext(params.Context), string(NoteDeleteAck))
+		if result.Replay || result.Superseded || result.NewNote == nil {
+			return
+		}
+		note = result.NewNote
+	} else {
+		note, err = noteSvc.Delete(ctx, c.User.UID, params)
+		if err != nil {
+			h.respondError(c, code.ErrorNoteDeleteFailed, err, "websocket_router.note.handleNoteDelete.Delete")
+			return
+		}
+		c.ToResponse(code.Success.WithData(dto.NoteDeleteAckMessage{
+			LastTime: note.UpdatedTimestamp, Path: note.Path, PathHash: note.PathHash,
+		}).WithVault(params.Vault).WithContext(params.Context), string(NoteDeleteAck))
 	}
-
-	c.ToResponse(code.Success.WithData(dto.NoteDeleteAckMessage{
-		LastTime: note.UpdatedTimestamp,
-		Path:     note.Path,
-		PathHash: note.PathHash,
-	}).WithVault(params.Vault).WithContext(params.Context), string(NoteDeleteAck))
 	c.BroadcastResponse(code.Success.WithData(
 		dto.NoteSyncDeleteMessage{
 			Path:             note.Path,
@@ -596,6 +622,7 @@ func (h *NoteWSHandler) NoteDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 			Mtime:            note.Mtime,
 			Size:             note.Size,
 			UpdatedTimestamp: note.UpdatedTimestamp,
+			MergeProtocol:    1, Revision: service.NoteRevision(note.UpdatedTimestamp), ContentDigest: service.NoteDigest(note.Content),
 		},
 	).WithVault(params.Vault), true, NoteSyncDelete)
 }
@@ -631,19 +658,31 @@ func (h *NoteWSHandler) NoteRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	pkgapp.NoteModifyLog(c.TraceID, c.User.UID, "NoteRename", params.Path, params.Vault)
 
 	uid := c.User.UID
-	oldNote, newNote, err := h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion()).Rename(c.Context(), uid, params)
-	if err != nil {
-		h.respondError(c, code.ErrorRenameNoteTargetExist, err, "websocket_router.note.NoteRename.Rename")
-		return
+	var oldNote, newNote *dto.NoteDTO
+	var err error
+	if params.MergeProtocol != 0 {
+		result, mutationErr := service.ApplyReliableMutation(c.Context(), h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion()), uid, &service.ReliableMutationRequest{
+			MergeProtocol: params.MergeProtocol, RequestID: params.RequestID, BaseRevision: params.BaseRevision, Kind: "rename", Vault: params.Vault, Path: params.Path, PathHash: params.PathHash, OldPath: params.OldPath, OldPathHash: params.OldPathHash,
+		})
+		if mutationErr != nil {
+			h.respondError(c, code.ErrorRenameNoteTargetExist, mutationErr, "NoteRename.ReliableMutation")
+			return
+		}
+		c.ToResponse(code.Success.WithData(result).WithVault(params.Vault).WithContext(params.Context), string(NoteRenameAck))
+		if result.Replay || result.Superseded || result.NewNote == nil || result.OldNote == nil {
+			return
+		}
+		oldNote, newNote = result.OldNote, result.NewNote
+	} else {
+		oldNote, newNote, err = h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion()).Rename(c.Context(), uid, params)
+		if err != nil {
+			h.respondError(c, code.ErrorRenameNoteTargetExist, err, "websocket_router.note.NoteRename.Rename")
+			return
+		}
+		c.ToResponse(code.Success.WithData(dto.NoteRenameAckMessage{
+			LastTime: newNote.UpdatedTimestamp, Path: newNote.Path, PathHash: newNote.PathHash,
+		}).WithVault(params.Vault).WithContext(params.Context), string(NoteRenameAck))
 	}
-
-	// 通知发送方重命名已确认，携带 lastTime 供客户端 FIFO 队列更新 hashManager
-	// Notify sender of successful rename with lastTime for client FIFO queue hashManager update
-	c.ToResponse(code.Success.WithData(dto.NoteRenameAckMessage{
-		LastTime: newNote.UpdatedTimestamp,
-		Path:     newNote.Path,
-		PathHash: newNote.PathHash,
-	}).WithVault(params.Vault).WithContext(params.Context), string(NoteRenameAck))
 	c.BroadcastResponse(code.Success.WithData(
 		dto.NoteSyncRenameMessage{
 			Path:             newNote.Path,
@@ -652,9 +691,11 @@ func (h *NoteWSHandler) NoteRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 			Ctime:            newNote.Ctime,
 			Mtime:            newNote.Mtime,
 			Size:             newNote.Size,
-			UpdatedTimestamp: newNote.UpdatedTimestamp,
-			OldPath:          oldNote.Path,
-			OldPathHash:      oldNote.PathHash,
+			UpdatedTimestamp: max(newNote.UpdatedTimestamp, oldNote.UpdatedTimestamp),
+			MergeProtocol:    1, Revision: service.NoteRevision(newNote.UpdatedTimestamp), ContentDigest: service.NoteDigest(newNote.Content),
+			OldPath:     oldNote.Path,
+			OldRevision: service.NoteRevision(oldNote.UpdatedTimestamp),
+			OldPathHash: oldNote.PathHash,
 		},
 	).WithVault(params.Vault), true, NoteSyncRename)
 }
@@ -672,9 +713,17 @@ func (h *NoteWSHandler) NoteRePush(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	uid := c.User.UID
 	note, err := h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion()).Get(c.Context(), uid, params)
 	if err != nil {
-		h.App.Logger().Debug("websocket_router.note.NoteRePush.Get: record not found or error, proceeding to send delete",
-			zap.String(logger.FieldTraceID, c.TraceID),
-			zap.Error(err))
+		if !errors.Is(err, code.ErrorNoteNotFound) {
+			h.respondError(c, code.ErrorDBQuery, err, "NoteRePush.Get")
+			return
+		}
+		recycle := *params
+		recycle.IsRecycle = true
+		note, err = h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion()).Get(c.Context(), uid, &recycle)
+		if err != nil && !errors.Is(err, code.ErrorNoteNotFound) {
+			h.respondError(c, code.ErrorDBQuery, err, "NoteRePush.GetRecycle")
+			return
+		}
 	}
 
 	if note != nil && note.Action != "delete" {
@@ -687,16 +736,20 @@ func (h *NoteWSHandler) NoteRePush(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 				Ctime:            note.Ctime,
 				Mtime:            note.Mtime,
 				UpdatedTimestamp: note.UpdatedTimestamp,
+				MergeProtocol:    1, Revision: service.NoteRevision(note.UpdatedTimestamp), ContentDigest: service.NoteDigest(note.Content),
 			},
 		).WithVault(params.Vault), NoteSyncModify)
 	} else {
 		// If note not found, send delete message to client to clean up local unauthorized creation
 		// 如果未找到笔记，则向客户端发送删除消息，以清理本地未授权的创建
+		revision := "0"
+		var stamp int64
+		if note != nil {
+			stamp = note.UpdatedTimestamp
+			revision = service.NoteRevision(stamp)
+		}
 		c.ToResponse(code.Success.WithData(
-			dto.NoteSyncDeleteMessage{
-				Path:     params.Path,
-				PathHash: params.PathHash,
-			},
+			dto.NoteSyncDeleteMessage{Path: params.Path, PathHash: params.PathHash, MergeProtocol: 1, Revision: revision, UpdatedTimestamp: stamp},
 		).WithVault(params.Vault), NoteSyncDelete)
 	}
 
@@ -906,6 +959,7 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 							Mtime:            note.Mtime,
 							Size:             note.Size,
 							UpdatedTimestamp: note.UpdatedTimestamp,
+							MergeProtocol:    1, Revision: service.NoteRevision(note.UpdatedTimestamp), ContentDigest: service.NoteDigest(note.Content),
 						},
 					).WithVault(params.Vault), true, NoteSyncDelete)
 				})
@@ -973,6 +1027,7 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 						Ctime:            note.Ctime,
 						Mtime:            note.Mtime,
 						UpdatedTimestamp: note.UpdatedTimestamp,
+						MergeProtocol:    1, Revision: service.NoteRevision(note.UpdatedTimestamp), ContentDigest: service.NoteDigest(note.Content),
 					},
 				})
 				needModifyCount++
@@ -1007,6 +1062,7 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 					Mtime:            note.Mtime,
 					Size:             note.Size,
 					UpdatedTimestamp: note.UpdatedTimestamp,
+					MergeProtocol:    1, Revision: service.NoteRevision(note.UpdatedTimestamp), ContentDigest: service.NoteDigest(note.Content),
 				},
 			})
 			needDeleteCount++
@@ -1064,6 +1120,7 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 									Ctime:            note.Ctime,
 									Mtime:            note.Mtime,
 									UpdatedTimestamp: note.UpdatedTimestamp,
+									MergeProtocol:    1, Revision: service.NoteRevision(note.UpdatedTimestamp), ContentDigest: service.NoteDigest(note.Content),
 								},
 							})
 							needModifyCount++
@@ -1106,6 +1163,7 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 							Ctime:            note.Ctime,
 							Mtime:            note.Mtime,
 							UpdatedTimestamp: note.UpdatedTimestamp,
+							MergeProtocol:    1, Revision: service.NoteRevision(note.UpdatedTimestamp), ContentDigest: service.NoteDigest(note.Content),
 						},
 					})
 					needSyncMtimeCount++
@@ -1125,6 +1183,7 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 						Ctime:            note.Ctime,
 						Mtime:            note.Mtime,
 						UpdatedTimestamp: note.UpdatedTimestamp,
+						MergeProtocol:    1, Revision: service.NoteRevision(note.UpdatedTimestamp), ContentDigest: service.NoteDigest(note.Content),
 					},
 				})
 				needModifyCount++

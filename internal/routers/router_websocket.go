@@ -24,6 +24,7 @@ func initWebSocketRoutes(wss *pkgapp.WebsocketServer, appContainer *app.App) {
 	settingWSHandler := websocket_router.NewSettingWSHandler(appContainer)
 
 	// Note
+	wss.Use("MergeCapabilities", noteWSHandler.MergeCapabilities)
 	wss.Use(websocket_router.NoteReceiveModify, noteWSHandler.NoteModify)
 	wss.Use(websocket_router.NoteReceiveDelete, noteWSHandler.NoteDelete)
 	wss.Use(websocket_router.NoteReceiveRename, noteWSHandler.NoteRename)

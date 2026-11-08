@@ -229,11 +229,11 @@ func (r *noteFTSRepository) rebuildVault(ctx context.Context, uid, vaultID int64
 	}
 
 	for _, note := range notes {
-		folder := r.dao.GetNoteFolderPath(uid, note.ID)
-		content, exists, err := r.dao.LoadContentFromFile(folder, "content.txt")
-		if err != nil || !exists {
-			content = ""
+		canonical, err := NewNoteRepository(r.dao).(*noteRepository).toDomain(&note, uid)
+		if err != nil {
+			return err
 		}
+		content := canonical.Content
 
 		doc := BleveNoteDoc{
 			ID:      strconv.FormatInt(note.ID, 10),

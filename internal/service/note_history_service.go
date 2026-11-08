@@ -328,6 +328,17 @@ func (s *noteHistoryService) RestoreFromHistory(ctx context.Context, uid int64, 
 		return nil, code.ErrorDBQuery.WithDetails(err.Error())
 	}
 
+	vault, err := s.vaultService.Get(ctx, uid, note.VaultID)
+	if err != nil {
+		return nil, err
+	}
+	ctx, unlockNote := LockNote(ctx, uid, vault.Name, note.PathHash)
+	defer unlockNote()
+	note, err = s.noteRepo.GetByID(ctx, history.NoteID, uid)
+	if err != nil {
+		return nil, err
+	}
+
 	// 3. Calculate content after this history version modification
 	// history.Content is the snapshot before this version modification (i.e., content of the previous version)
 	// history.DiffPatch is the difference patch from before modification to after modification

@@ -39,7 +39,34 @@ func (d *Dao) SaveContentToFile(folderPath string, fileName string, content stri
 		return err
 	}
 	filePath := filepath.Join(folderPath, fileName)
-	return os.WriteFile(filePath, []byte(content), 0644)
+	f, err := os.CreateTemp(folderPath, ".note-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	defer os.Remove(name)
+	if err = f.Chmod(0644); err == nil {
+		_, err = f.Write([]byte(content))
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err = os.Rename(name, filePath); err != nil {
+		return err
+	}
+	dir, err := os.Open(folderPath)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 // loadContentFromFile loads content from a file

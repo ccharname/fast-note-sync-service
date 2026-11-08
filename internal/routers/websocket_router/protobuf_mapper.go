@@ -659,6 +659,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				Ctime:       src.Ctime,
 				Mtime:       src.Mtime,
 				LastTime:    src.UpdatedTimestamp,
+				BaseHash:    src.BaseHash,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -767,9 +768,10 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 	case NoteModifyAck:
 		if src, ok := data.(dto.NoteModifyAckMessage); ok {
 			pbMsg := &v1.NoteModifyAckMessage{
-				LastTime: src.LastTime,
-				Path:     src.Path,
-				PathHash: src.PathHash,
+				LastTime:    src.LastTime,
+				Path:        src.Path,
+				PathHash:    src.PathHash,
+				ContentHash: src.ContentHash,
 			}
 			return proto.Marshal(pbMsg)
 		}
