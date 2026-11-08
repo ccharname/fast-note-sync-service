@@ -1,57 +1,40 @@
 package service
 
 import (
-	"context"
 	"fmt"
 	"sort"
 
 	"github.com/haierkeys/fast-note-sync-service/pkg/keyedmutex"
 )
 
-// noteWriteLocks serializes every write path of one note (uid, vault, pathHash) inside this process.
-// FNS runs as a single instance, so an in-process lock is enough; no distributed lock is needed.
-// noteWriteLocks 在进程内串行化同一笔记 (uid, vault, pathHash) 的所有写路径。
-// FNS 为单实例部署，进程内锁足够，不引入分布式锁。
-var noteWriteLocks = keyedmutex.New()
+// lucky-v2: one process-wide lock per note (uid+vaultID+pathHash). Every code path that
+// writes a note body / deletes / renames takes it, so server-side merge sees a stable "S"
+// and REST / MCP / background writers cannot interleave with it. Entries are ref-counted
+// and removed when idle (see pkg/keyedmutex), so the table does not leak.
+// lucky-v2：进程内每篇笔记一把锁，所有写正文/删除/重命名的入口都取它。
 
-type noteLocksHeldKey struct{}
+var noteLocks = keyedmutex.New()
 
-// LockNote locks the given note paths (same uid and vault) and returns a ctx that remembers the held keys,
-// so nested LockNote calls on the same keys (e.g. NoteModify handler -> ModifyOrCreate) are no-ops
-// instead of deadlocking. Keys are always taken in sorted order so multi-path callers (rename) cannot deadlock.
-// LockNote 锁定同一 uid/vault 下的若干笔记路径，返回记住已持有 key 的 ctx；对同一 key 的嵌套调用是空操作，
-// 避免死锁（例如 NoteModify 处理器 -> ModifyOrCreate）。多路径调用方（重命名）按排序顺序加锁，避免互相死锁。
-func LockNote(ctx context.Context, uid int64, vault string, pathHashes ...string) (context.Context, func()) {
-	held, _ := ctx.Value(noteLocksHeldKey{}).(map[string]struct{})
+func noteLockKey(uid, vaultID int64, pathHash string) string {
+	return fmt.Sprintf("note|%d|%d|%s", uid, vaultID, pathHash)
+}
 
-	keys := make([]string, 0, len(pathHashes))
-	seen := make(map[string]struct{}, len(pathHashes))
-	for _, ph := range pathHashes {
-		k := fmt.Sprintf("note_write_%d_%s_%s", uid, vault, ph)
-		if _, ok := held[k]; ok {
-			continue
+// lockNotes locks all keys in lexicographic order (deadlock-free for multi-key callers such
+// as rename) and returns a single unlock func.
+func lockNotes(keys ...string) func() {
+	ks := append([]string(nil), keys...)
+	sort.Strings(ks)
+	uniq := ks[:0]
+	for i, k := range ks {
+		if i == 0 || k != ks[i-1] {
+			uniq = append(uniq, k)
 		}
-		if _, ok := seen[k]; ok {
-			continue
-		}
-		seen[k] = struct{}{}
-		keys = append(keys, k)
 	}
-	if len(keys) == 0 {
-		return ctx, func() {}
+	unlocks := make([]func(), 0, len(uniq))
+	for _, k := range uniq {
+		unlocks = append(unlocks, noteLocks.Lock(k))
 	}
-	sort.Strings(keys)
-
-	next := make(map[string]struct{}, len(held)+len(keys))
-	for k := range held {
-		next[k] = struct{}{}
-	}
-	unlocks := make([]func(), 0, len(keys))
-	for _, k := range keys {
-		unlocks = append(unlocks, noteWriteLocks.Lock(k))
-		next[k] = struct{}{}
-	}
-	return context.WithValue(ctx, noteLocksHeldKey{}, next), func() {
+	return func() {
 		for i := len(unlocks) - 1; i >= 0; i-- {
 			unlocks[i]()
 		}

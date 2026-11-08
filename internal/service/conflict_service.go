@@ -82,7 +82,9 @@ func (s *conflictService) CreateConflictFile(ctx context.Context, uid int64, par
 
 	// Save conflict file
 	// 保存冲突文件
+	unlockNote := lockRecover(ctx, noteLockKey(uid, vaultID, conflictPathHash)) // lucky-v2
 	created, err := s.noteRepo.Create(ctx, conflictNote, uid)
+	unlockNote()
 	if err != nil {
 		s.logger.Error("failed to create conflict file",
 			zap.String("originalPath", params.OriginalPath),

@@ -3,11 +3,6 @@ package dto
 // NoteSyncRenameMessage message structure for note rename during sync
 // NoteSyncRenameMessage 同步过程中笔记重命名的消息结构
 type NoteSyncRenameMessage struct {
-	OldRevision   string `json:"oldRevision,omitempty"`
-	MergeProtocol int    `json:"mergeProtocol,omitempty"`
-	Revision      string `json:"revision,omitempty"`
-	ContentDigest string `json:"contentDigest,omitempty"`
-
 	Path             string `json:"path" form:"path" binding:"required" example:"NewName.md"` // New path // 新路径
 	PathHash         string `json:"pathHash" form:"pathHash" example:"nfhash123"`             // New path hash // 新路径哈希
 	ContentHash      string `json:"contentHash" form:"contentHash" example:"chash456"`        // Content hash // 内容哈希
@@ -17,15 +12,13 @@ type NoteSyncRenameMessage struct {
 	OldPath          string `json:"oldPath" form:"oldPath" example:"OldName.md"`              // Old path // 旧路径
 	OldPathHash      string `json:"oldPathHash" form:"oldPathHash" example:"ofhash456"`       // Old path hash // 旧路径哈希
 	UpdatedTimestamp int64  `json:"lastTime" form:"updatedTimestamp" example:"1700000000"`    // Record update timestamp // 记录更新时间戳
+	Rev              int64  `json:"rev,omitempty"`                                            // lucky-v2
+	Sha              string `json:"sha,omitempty"`                                            // lucky-v2
 }
 
 // NoteSyncModifyMessage message content for note modification or creation
 // NoteSyncModifyMessage 笔记修改或创建的消息内容
 type NoteSyncModifyMessage struct {
-	MergeProtocol int    `json:"mergeProtocol,omitempty"`
-	Revision      string `json:"revision,omitempty"`
-	ContentDigest string `json:"contentDigest,omitempty"`
-
 	Path             string `json:"path" form:"path" example:"ReadMe.md"`                  // Note path // 笔记路径
 	PathHash         string `json:"pathHash" form:"pathHash" example:"nhash123"`           // Path hash // 路径哈希值
 	Content          string `json:"content" form:"content" example:"# Hello World"`        // Note content // 笔记内容
@@ -33,10 +26,8 @@ type NoteSyncModifyMessage struct {
 	Ctime            int64  `json:"ctime" form:"ctime" example:"1700000000"`               // Creation timestamp // 创建时间戳
 	Mtime            int64  `json:"mtime" form:"mtime" example:"1700000000"`               // Modification timestamp // 修改时间戳
 	UpdatedTimestamp int64  `json:"lastTime" form:"updatedTimestamp" example:"1700000000"` // Record update timestamp // 记录更新时间戳
-	// BaseHash is the server-side contentHash before this write (empty for a newly created note or for messages not caused by a write).
-	// Lets a receiver tell a legal successor (baseHash == its own base) from a concurrent edit without any time window. Optional, old clients ignore it.
-	// BaseHash 为本次写入前服务端的 contentHash（新建笔记或非写入触发的消息为空）。接收端据此区分「合法后继」与「并发编辑」，无需时间窗。可选字段，旧客户端忽略。
-	BaseHash string `json:"baseHash,omitempty" form:"baseHash" example:"chash455"`
+	Rev              int64  `json:"rev,omitempty"`                                         // lucky-v2: strictly increasing revision (== lastTime) // 严格递增修订号
+	Sha              string `json:"sha,omitempty"`                                         // lucky-v2: sha256 hex of content // 正文 sha256
 }
 
 // NoteSyncEndMessage message structure returned when sync ends
@@ -59,10 +50,6 @@ type NoteSyncNeedPushMessage struct {
 // NoteSyncMtimeMessage message structure for updating mtime during sync
 // NoteSyncMtimeMessage 同步时用于更新 mtime 的消息结构
 type NoteSyncMtimeMessage struct {
-	MergeProtocol int    `json:"mergeProtocol,omitempty"`
-	Revision      string `json:"revision,omitempty"`
-	ContentDigest string `json:"contentDigest,omitempty"`
-
 	Path             string `json:"path" form:"path" example:"ReadMe.md"`                  // Note path // 笔记路径
 	Ctime            int64  `json:"ctime" form:"ctime" example:"1700000000"`               // Creation timestamp // 创建时间戳
 	Mtime            int64  `json:"mtime" form:"mtime" example:"1700000000"`               // Modification timestamp // 修改时间戳
@@ -72,46 +59,51 @@ type NoteSyncMtimeMessage struct {
 // NoteSyncDeleteMessage message structure for note deletion
 // NoteSyncDeleteMessage 笔记删除的消息结构
 type NoteSyncDeleteMessage struct {
-	MergeProtocol int    `json:"mergeProtocol,omitempty"`
-	Revision      string `json:"revision,omitempty"`
-	ContentDigest string `json:"contentDigest,omitempty"`
-
 	Path             string `json:"path" form:"path" example:"DeletedNote.md"`             // Note path // 笔记路径
 	PathHash         string `json:"pathHash" form:"pathHash" example:"dnhash789"`          // Path hash // 路径哈希值
 	Ctime            int64  `json:"ctime" form:"ctime" example:"1700000000"`               // Creation timestamp // 创建时间戳
 	Mtime            int64  `json:"mtime" form:"mtime" example:"1700000000"`               // Modification timestamp // 修改时间戳
 	Size             int64  `json:"size" form:"size" example:"1024"`                       // File size // 文件大小
 	UpdatedTimestamp int64  `json:"lastTime" form:"updatedTimestamp" example:"1700000000"` // Record update timestamp // 记录更新时间戳
+	Rev              int64  `json:"rev,omitempty"`                                         // lucky-v2
 }
 
 // NoteModifyAckMessage note modify operation ACK, sent back to sender after server processes NoteModify
 // NoteModifyAckMessage 笔记修改操作 ACK，服务端处理完 NoteModify 后回发给发送方
 type NoteModifyAckMessage struct {
-	LastTime    int64  `json:"lastTime"`              // Server write timestamp // 服务端写入时间戳
-	Path        string `json:"path"`                  // Note path // 笔记路径
-	PathHash    string `json:"pathHash"`              // Path hash // 路径哈希值
-	ContentHash string `json:"contentHash,omitempty"` // contentHash stored by the server after this request (optional; lets the client match the Ack to its request) // 服务端处理后落库的 contentHash（可选，客户端据此把 Ack 对应到自己的请求）
+	LastTime int64  `json:"lastTime"` // Server write timestamp // 服务端写入时间戳
+	Path     string `json:"path"`     // Note path // 笔记路径
+	PathHash string `json:"pathHash"` // Path hash // 路径哈希值
+	NoteAckExt        // lucky-v2: optional fields, only filled for serverMerge requests // 仅 serverMerge 请求填充
 }
 
 // NoteRenameAckMessage note rename operation ACK, sent back to sender after server processes NoteRename
 // NoteRenameAckMessage 笔记重命名操作 ACK，服务端处理完 NoteRename 后回发给发送方
 type NoteRenameAckMessage struct {
-	MergeProtocol int    `json:"mergeProtocol"`
-	RequestID     string `json:"requestId"`
-	Revision      string `json:"revision"`
-	OldPath       string `json:"oldPath"`
-	LastTime      int64  `json:"lastTime"` // Server write timestamp // 服务端写入时间戳
-	Path          string `json:"path"`     // New note path after rename // 重命名后的笔记新路径
-	PathHash      string `json:"pathHash"` // Path hash // 路径哈希值
+	LastTime int64  `json:"lastTime"` // Server write timestamp // 服务端写入时间戳
+	Path     string `json:"path"`     // New note path after rename // 重命名后的笔记新路径
+	PathHash string `json:"pathHash"` // Path hash // 路径哈希值
+	NoteAckExt        // lucky-v2: optional fields, only filled for serverMerge requests // 仅 serverMerge 请求填充
 }
 
 // NoteDeleteAckMessage note delete operation ACK, sent back to sender after server processes NoteDelete
 // NoteDeleteAckMessage 笔记删除操作 ACK，服务端处理完 NoteDelete 后回发给发送方
 type NoteDeleteAckMessage struct {
-	MergeProtocol int    `json:"mergeProtocol"`
-	RequestID     string `json:"requestId"`
-	Revision      string `json:"revision"`
-	LastTime      int64  `json:"lastTime"` // Server write timestamp // 服务端写入时间戳
-	Path          string `json:"path"`     // Note path // 笔记路径
-	PathHash      string `json:"pathHash"` // Path hash // 路径哈希值
+	LastTime int64  `json:"lastTime"` // Server write timestamp // 服务端写入时间戳
+	Path     string `json:"path"`     // Note path // 笔记路径
+	PathHash string `json:"pathHash"` // Path hash // 路径哈希值
+	NoteAckExt        // lucky-v2: optional fields, only filled for serverMerge requests // 仅 serverMerge 请求填充
+}
+
+// NoteAckExt lucky-v2 optional Ack fields (embedded, flattened in JSON)
+// lucky-v2 Ack 可选扩展字段（内嵌，JSON 中平铺）
+type NoteAckExt struct {
+	OpID         string `json:"opId,omitempty"`
+	Rev          int64  `json:"rev,omitempty"`
+	Sha          string `json:"sha,omitempty"`
+	Merged       bool   `json:"merged,omitempty"`
+	Content      string `json:"content,omitempty"`
+	ConflictCopy string `json:"conflictCopy,omitempty"`
+	Rejected     bool   `json:"rejected,omitempty"`
+	RejectReason string `json:"rejectReason,omitempty"`
 }

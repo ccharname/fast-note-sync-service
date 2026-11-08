@@ -311,13 +311,15 @@ func (d *Dao) resolveConfig(key string) config.DatabaseConfig {
 func (d *Dao) GetOrCreateDB(key string) *gorm.DB {
 	// Use read lock to check if already exists
 	// 使用读锁检查是否已存在
-	d.mu.RLock()
+	// lucky-v2: lastUsed is written here, so this must be the write lock (was RLock: data race under -race)
+	// lucky-v2：此处会写 lastUsed，必须用写锁（原为 RLock，-race 下为数据竞争）
+	d.mu.Lock()
 	if entry, ok := d.KeyDb[key]; ok {
 		entry.lastUsed = time.Now()
-		d.mu.RUnlock()
+		d.mu.Unlock()
 		return entry.db
 	}
-	d.mu.RUnlock()
+	d.mu.Unlock()
 
 	// Get configuration
 	// 获取配置

@@ -15,6 +15,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/routers"
 	"github.com/haierkeys/fast-note-sync-service/internal/task"
 	"github.com/haierkeys/fast-note-sync-service/internal/upgrade"
+	"github.com/haierkeys/fast-note-sync-service/internal/service"
 	"github.com/haierkeys/fast-note-sync-service/pkg/logger"
 	"github.com/haierkeys/fast-note-sync-service/pkg/safe_close"
 	"github.com/haierkeys/fast-note-sync-service/pkg/validator"
@@ -390,6 +391,7 @@ func initLoggerWithConfig(s *Server, cfg *internalApp.AppConfig) error {
 		return fmt.Errorf("failed to init logger: %w", err)
 	}
 	s.logger = lg
+	service.SetOpLogger(lg) // lucky-v2: serverMerge per-op logs
 
 	return nil
 }

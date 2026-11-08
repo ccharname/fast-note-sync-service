@@ -3,14 +3,11 @@
 package dao
 
 import (
+	"sort"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/blevesearch/bleve/v2"
@@ -59,6 +56,11 @@ func (r *noteRepository) note(uid int64) *query.Query {
 		// Initialize universal full-text search table
 		// 初始化通用全文搜索表
 		_ = model.CreateNoteFTSTable(g)
+		// lucky-v2: seed the rev counter from this DB's highest stored revision
+		var maxRev int64
+		if g.Model(&model.Note{}).Select("COALESCE(MAX(updated_timestamp),0)").Scan(&maxRev).Error == nil {
+			SeedRev(maxRev)
+		}
 	}, r.GetKey(uid)+"#note_v3", r.GetKey(uid))
 }
 
@@ -179,50 +181,31 @@ func (r *noteRepository) fillNoteContent(uid int64, n *domain.Note) error {
 	}
 	folder := r.dao.GetNoteFolderPath(uid, n.ID)
 
-	// New metadata points to an immutable, fsynced body. The metadata commit selects
-	// the body atomically; content.txt is a compatibility projection, never truth.
-	if strings.HasPrefix(n.Content, noteBlobPrefix) {
-		digest := strings.TrimPrefix(n.Content, noteBlobPrefix)
-		if len(digest) != 64 {
-			return fmt.Errorf("invalid note body reference")
-		}
-		if _, err := hex.DecodeString(digest); err != nil {
-			return fmt.Errorf("invalid note body reference: %w", err)
-		}
-		body, exists, err := r.dao.LoadContentFromFile(r.noteBlobFolder(uid), digest+".txt")
-		if err != nil {
-			return err
-		}
-		if !exists || noteBodyDigest(body) != digest || n.ContentHash != util.EncodeHash32(body) || n.Size != int64(len(body)) {
-			return fmt.Errorf("note body reference verification failed")
-		}
-		n.Content = body
-	} else {
-		// Legacy rows retain their old on-disk body until the next mutation.
-		content, exists, err := r.dao.LoadContentFromFile(folder, "content.txt")
-		if err != nil {
-			return err
-		}
-		if exists {
-			n.Content = content
-		} else if n.Content != "" {
-			// Lazy migration failed, log warning but do not block flow
-			// 懒迁移失败记录警告日志但不阻断流程
-			if err := r.dao.SaveContentToFile(folder, "content.txt", n.Content); err != nil {
-				r.dao.Logger().Warn("lazy migration: SaveContentToFile failed for note content",
-					zap.Int64(logger.FieldUID, uid),
-					zap.Int64("noteId", n.ID),
-					zap.String(logger.FieldMethod, "noteRepository.fillNoteContent"),
-					zap.Error(err),
-				)
-			}
-		} else {
-			// File does not exist and no content to migrate, return error to prevent data loss (treated as read failure)
-			// 文件不存在且没有可迁移的内容，返回错误以防止数据丢失（视为读取失败）
-			return fmt.Errorf("note content file not found: %w", os.ErrNotExist)
-		}
-
+	// Load content
+	// 加载内容
+	content, exists, err := r.dao.LoadContentFromFile(folder, "content.txt")
+	if err != nil {
+		return err
 	}
+	if exists {
+		n.Content = content
+	} else if n.Content != "" {
+		// Lazy migration failed, log warning but do not block flow
+		// 懒迁移失败记录警告日志但不阻断流程
+		if err := r.dao.SaveContentToFile(folder, "content.txt", n.Content); err != nil {
+			r.dao.Logger().Warn("lazy migration: SaveContentToFile failed for note content",
+				zap.Int64(logger.FieldUID, uid),
+				zap.Int64("noteId", n.ID),
+				zap.String(logger.FieldMethod, "noteRepository.fillNoteContent"),
+				zap.Error(err),
+			)
+		}
+	} else {
+		// File does not exist and no content to migrate, return error to prevent data loss (treated as read failure)
+		// 文件不存在且没有可迁移的内容，返回错误以防止数据丢失（视为读取失败）
+		return fmt.Errorf("note content file not found: %w", os.ErrNotExist)
+	}
+
 	// Load snapshot
 	// 加载快照
 	snapshot, exists, err := r.dao.LoadContentFromFile(folder, "snapshot.txt")
@@ -374,16 +357,6 @@ func (r *noteRepository) GetByPath(ctx context.Context, path string, vaultID, ui
 	return r.toDomain(m, uid)
 }
 
-const noteBlobPrefix = "fns-blob-sha256-v1:"
-
-func noteBodyDigest(body string) string {
-	sum := sha256.Sum256([]byte(body))
-	return hex.EncodeToString(sum[:])
-}
-func (r *noteRepository) noteBlobFolder(uid int64) string {
-	return filepath.Join(filepath.Dir(r.dao.GetNoteFolderPath(uid, 0)), "bodies-sha256")
-}
-
 // Create creates a note
 // Create 创建笔记
 func (r *noteRepository) Create(ctx context.Context, note *domain.Note, uid int64) (*domain.Note, error) {
@@ -391,31 +364,18 @@ func (r *noteRepository) Create(ctx context.Context, note *domain.Note, uid int6
 	var createErr error
 
 	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		noteCommitBarrier.RLock()
+		defer noteCommitBarrier.RUnlock()
 		u := r.note(uid).Note
 		m := r.toModel(note)
 
-		m.UpdatedTimestamp = timex.Now().UnixMilli()
-		if m.ID != 0 {
-			previous, e := u.WithContext(ctx).Where(u.ID.Eq(m.ID)).First()
-			if e == nil && m.UpdatedTimestamp <= previous.UpdatedTimestamp {
-				m.UpdatedTimestamp = previous.UpdatedTimestamp + 1
-			}
-		}
-		if m.UpdatedTimestamp <= note.UpdatedTimestamp {
-			m.UpdatedTimestamp = note.UpdatedTimestamp + 1
-		}
+		m.UpdatedTimestamp = NextRev(0)
 		m.CreatedAt = timex.Now()
 		m.UpdatedAt = timex.Now()
 
 		content := m.Content
-		m.Size = int64(len(content))
-		m.ContentHash = util.EncodeHash32(content)
-		digest := noteBodyDigest(content)
-		if err := r.dao.SaveContentToFile(r.noteBlobFolder(uid), digest+".txt", content); err != nil {
-			return err
-		}
-		m.Content = noteBlobPrefix + digest // Immutable body reference
-		m.ContentLastSnapshot = ""          // Do not store snapshot in database // 不在数据库存储快照
+		m.Content = ""             // Do not store content in database // 不在数据库存储内容
+		m.ContentLastSnapshot = "" // Do not store snapshot in database // 不在数据库存储快照
 
 		createErr = u.WithContext(ctx).Create(m)
 		if createErr != nil {
@@ -455,29 +415,16 @@ func (r *noteRepository) Update(ctx context.Context, note *domain.Note, uid int6
 	var updateErr error
 
 	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		noteCommitBarrier.RLock()
+		defer noteCommitBarrier.RUnlock()
 		u := r.note(uid).Note
 		m := r.toModel(note)
 
-		m.UpdatedTimestamp = timex.Now().UnixMilli()
-		if m.ID != 0 {
-			previous, e := u.WithContext(ctx).Where(u.ID.Eq(m.ID)).First()
-			if e == nil && m.UpdatedTimestamp <= previous.UpdatedTimestamp {
-				m.UpdatedTimestamp = previous.UpdatedTimestamp + 1
-			}
-		}
-		if m.UpdatedTimestamp <= note.UpdatedTimestamp {
-			m.UpdatedTimestamp = note.UpdatedTimestamp + 1
-		}
+		m.UpdatedTimestamp = NextRev(note.UpdatedTimestamp)
 		m.UpdatedAt = timex.Now()
 
 		content := m.Content
-		m.Size = int64(len(content))
-		m.ContentHash = util.EncodeHash32(content)
-		digest := noteBodyDigest(content)
-		if err := r.dao.SaveContentToFile(r.noteBlobFolder(uid), digest+".txt", content); err != nil {
-			return err
-		}
-		m.Content = noteBlobPrefix + digest // Immutable body reference
+		m.Content = "" // Do not update content in database // 不在数据库更新内容
 
 		updateErr = u.WithContext(ctx).Where(
 			u.ID.Eq(m.ID),
@@ -536,6 +483,8 @@ func (r *noteRepository) Update(ctx context.Context, note *domain.Note, uid int6
 // UpdateDelete 更新笔记为删除状态
 func (r *noteRepository) UpdateDelete(ctx context.Context, note *domain.Note, uid int64) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		noteCommitBarrier.RLock()
+		defer noteCommitBarrier.RUnlock()
 		u := r.note(uid).Note
 		m := &model.Note{
 			ID:               note.ID,
@@ -545,16 +494,9 @@ func (r *noteRepository) UpdateDelete(ctx context.Context, note *domain.Note, ui
 			ClientType:       note.ClientType,
 			ClientVersion:    note.ClientVersion,
 			Mtime:            note.Mtime,
-			UpdatedTimestamp: timex.Now().UnixMilli(),
+			UpdatedTimestamp: NextRev(note.UpdatedTimestamp),
 		}
 
-		previous, e := u.WithContext(ctx).Where(u.ID.Eq(m.ID)).First()
-		if e != nil {
-			return e
-		}
-		if m.UpdatedTimestamp <= previous.UpdatedTimestamp {
-			m.UpdatedTimestamp = previous.UpdatedTimestamp + 1
-		}
 		err := u.WithContext(ctx).Where(
 			u.ID.Eq(m.ID),
 		).Select(
@@ -582,21 +524,15 @@ func (r *noteRepository) UpdateDelete(ctx context.Context, note *domain.Note, ui
 // UpdateMtime 更新笔记修改时间
 func (r *noteRepository) UpdateMtime(ctx context.Context, mtime int64, id, uid int64) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		noteCommitBarrier.RLock()
+		defer noteCommitBarrier.RUnlock()
 		u := r.note(uid).Note
-		previous, e := u.WithContext(ctx).Where(u.ID.Eq(id)).First()
-		if e != nil {
-			return e
-		}
-		stamp := timex.Now().UnixMilli()
-		if stamp <= previous.UpdatedTimestamp {
-			stamp = previous.UpdatedTimestamp + 1
-		}
 
 		_, err := u.WithContext(ctx).Where(
 			u.ID.Eq(id),
 		).UpdateSimple(
 			u.Mtime.Value(mtime),
-			u.UpdatedTimestamp.Value(stamp),
+			u.UpdatedTimestamp.Value(NextRev(0)),
 			u.UpdatedAt.Value(timex.Now()),
 		)
 		return err
@@ -607,22 +543,16 @@ func (r *noteRepository) UpdateMtime(ctx context.Context, mtime int64, id, uid i
 // UpdateActionMtime 更新笔记修改时间
 func (r *noteRepository) UpdateActionMtime(ctx context.Context, action domain.NoteAction, mtime int64, id, uid int64) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		noteCommitBarrier.RLock()
+		defer noteCommitBarrier.RUnlock()
 		u := r.note(uid).Note
-		previous, e := u.WithContext(ctx).Where(u.ID.Eq(id)).First()
-		if e != nil {
-			return e
-		}
-		stamp := timex.Now().UnixMilli()
-		if stamp <= previous.UpdatedTimestamp {
-			stamp = previous.UpdatedTimestamp + 1
-		}
 
 		_, err := u.WithContext(ctx).Where(
 			u.ID.Eq(id),
 		).UpdateSimple(
 			u.Action.Value(string(action)),
 			u.Mtime.Value(mtime),
-			u.UpdatedTimestamp.Value(stamp),
+			u.UpdatedTimestamp.Value(NextRev(0)),
 			u.UpdatedAt.Value(timex.Now()),
 		)
 		return err
@@ -653,6 +583,10 @@ func (r *noteRepository) UpdateSnapshot(ctx context.Context, snapshot, snapshotH
 // Delete physically deletes a note
 // Delete 物理删除笔记
 func (r *noteRepository) Delete(ctx context.Context, id, vaultID, uid int64) error {
+	// lucky-v2: serialize with writers of this note (lock taken outside ExecuteWrite)
+	if m, err := r.note(uid).Note.WithContext(ctx).Where(r.note(uid).Note.ID.Eq(id)).First(); err == nil && m != nil {
+		defer NoteLock(uid, m.VaultID, m.PathHash)()
+	}
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		u := r.note(uid).Note
 
@@ -676,32 +610,39 @@ func (r *noteRepository) Delete(ctx context.Context, id, vaultID, uid int64) err
 // DeletePhysicalByTime physically deletes notes marked as deleted by time
 // DeletePhysicalByTime 根据时间物理删除已标记删除的笔记
 func (r *noteRepository) DeletePhysicalByTime(ctx context.Context, timestamp, uid int64) error {
-	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
-		u := r.note(uid).Note
+	u := r.note(uid).Note
+	// lucky-v2: candidates are read outside the lock; each one is re-checked and deleted under
+	// its own note lock, so a concurrent restore/recreate is never deleted by mistake.
+	list, _ := u.WithContext(ctx).Where(
+		u.Action.Eq("delete"),
+		u.UpdatedTimestamp.Lt(timestamp),
+	).Select(u.ID, u.VaultID, u.PathHash).Find()
 
-		// 先找到要删除的 ID
-		list, _ := u.WithContext(ctx).Where(
-			u.Action.Eq("delete"),
-			u.UpdatedTimestamp.Lt(timestamp),
-		).Select(u.ID, u.VaultID).Find()
-
-		for _, m := range list {
-			r.deleteFTS(m.ID, m.VaultID, uid)
-		}
-
-		_, err := u.WithContext(ctx).Where(
-			u.Action.Eq("delete"),
-			u.UpdatedTimestamp.Lt(timestamp),
-		).Delete()
-
-		if err == nil {
-			for _, m := range list {
-				folder := r.dao.GetNoteFolderPath(uid, m.ID)
-				_ = r.dao.RemoveContentFolder(folder)
+	var firstErr error
+	for _, m := range list {
+		m := m
+		unlock := NoteLock(uid, m.VaultID, m.PathHash)
+		err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+			uu := r.note(uid).Note
+			still, err := uu.WithContext(ctx).Where(
+				uu.ID.Eq(m.ID), uu.Action.Eq("delete"), uu.UpdatedTimestamp.Lt(timestamp),
+			).Count()
+			if err != nil || still == 0 {
+				return err
 			}
+			r.deleteFTS(m.ID, m.VaultID, uid)
+			if _, err := uu.WithContext(ctx).Where(uu.ID.Eq(m.ID)).Delete(); err != nil {
+				return err
+			}
+			_ = r.dao.RemoveContentFolder(r.dao.GetNoteFolderPath(uid, m.ID))
+			return nil
+		})
+		unlock()
+		if err != nil && firstErr == nil {
+			firstErr = err
 		}
-		return err
-	})
+	}
+	return firstErr
 }
 
 // DeletePhysicalByTimeAll physically deletes notes marked as deleted for all users by time
@@ -1192,29 +1133,43 @@ func (r *noteRepository) CountByFIDs(ctx context.Context, fids []int64, vaultID,
 
 // RecycleClear 清理回收站
 func (r *noteRepository) RecycleClear(ctx context.Context, path, pathHash string, vaultID, uid int64) error {
-	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
-		u := r.note(uid).Note
-		q := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.Action.Eq(string(domain.NoteActionDelete)), u.Rename.Eq(0))
-		if pathHash != "" {
-			q = q.Where(u.PathHash.Eq(pathHash))
-		}
-		rows, err := q.Find()
+	// lucky-v2: candidates are read first, then each is cleared under its own note lock
+	// (taken outside ExecuteWrite) with the conditions re-checked in the same statement.
+	u := r.note(uid).Note
+	q := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.Action.Eq(string(domain.NoteActionDelete)), u.Rename.Eq(0))
+	if pathHash != "" {
+		q = q.Where(u.PathHash.Eq(pathHash))
+	}
+	list, err := q.Select(u.PathHash).Find()
+	if err != nil {
+		return err
+	}
+	hashes := make([]string, 0, len(list))
+	for _, m := range list {
+		hashes = append(hashes, m.PathHash)
+	}
+	sort.Strings(hashes)
+	for _, h := range hashes {
+		h := h
+		unlock := NoteLock(uid, vaultID, h)
+		err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+			noteCommitBarrier.RLock()
+			defer noteCommitBarrier.RUnlock()
+			uu := r.note(uid).Note
+			_, err := uu.WithContext(ctx).Where(uu.VaultID.Eq(vaultID), uu.PathHash.Eq(h),
+				uu.Action.Eq(string(domain.NoteActionDelete)), uu.Rename.Eq(0)).UpdateSimple(
+				uu.Rename.Value(2),
+				uu.UpdatedTimestamp.Value(NextRev(0)),
+				uu.UpdatedAt.Value(timex.Now()),
+			)
+			return err
+		})
+		unlock()
 		if err != nil {
 			return err
 		}
-		for _, previous := range rows {
-			stamp := timex.Now().UnixMilli()
-			if stamp <= previous.UpdatedTimestamp {
-				stamp = previous.UpdatedTimestamp + 1
-			}
-			if _, err = u.WithContext(ctx).Where(u.ID.Eq(previous.ID)).UpdateSimple(
-				u.Rename.Value(2), u.UpdatedTimestamp.Value(stamp), u.UpdatedAt.Value(timex.Now()),
-			); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // UpdateFID 仅更新笔记的文件夹关联 ID，不更新 updated_timestamp
@@ -1447,11 +1402,11 @@ func (r *noteRepository) RebuildVaultIndex(ctx context.Context, uid, vaultID int
 	}
 
 	for _, note := range notes {
-		canonical, err := r.toDomain(&note, uid)
-		if err != nil {
-			return err
+		folder := r.dao.GetNoteFolderPath(uid, note.ID)
+		content, exists, err := r.dao.LoadContentFromFile(folder, "content.txt")
+		if err != nil || !exists {
+			content = ""
 		}
-		content := canonical.Content
 
 		doc := BleveNoteDoc{
 			ID:      strconv.FormatInt(note.ID, 10),
@@ -1473,38 +1428,29 @@ func (r *noteRepository) RebuildVaultIndex(ctx context.Context, uid, vaultID int
 // DeleteByVaultID physically deletes all notes in a vault
 // DeleteByVaultID 物理删除仓库下的所有笔记
 func (r *noteRepository) DeleteByVaultID(ctx context.Context, vaultID, uid int64) error {
-	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
-		u := r.note(uid).Note
-
-		// 查找该仓库下的所有笔记 ID
-		notes, err := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID)).Select(u.ID).Find()
-		if err != nil {
-			return err
-		}
-
-		if len(notes) == 0 {
+	u := r.note(uid).Note
+	// lucky-v2: delete note by note under each note's lock (locks are taken outside ExecuteWrite)
+	notes, err := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID)).Select(u.ID, u.PathHash).Find()
+	if err != nil {
+		return err
+	}
+	for _, n := range notes {
+		n := n
+		unlock := NoteLock(uid, vaultID, n.PathHash)
+		err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+			uu := r.note(uid).Note
+			if _, err := uu.WithContext(ctx).Where(uu.ID.Eq(n.ID), uu.VaultID.Eq(vaultID)).Delete(); err != nil {
+				return err
+			}
+			_ = r.dao.RemoveContentFolder(r.dao.GetNoteFolderPath(uid, n.ID))
 			return nil
-		}
-
-		var ids []int64
-		for _, n := range notes {
-			ids = append(ids, n.ID)
-		}
-
-		// 从数据库删除
-		_, err = u.WithContext(ctx).Where(u.VaultID.Eq(vaultID)).Delete()
+		})
+		unlock()
 		if err != nil {
 			return err
 		}
-
-		// 删除物理文件夹
-		for _, id := range ids {
-			folder := r.dao.GetNoteFolderPath(uid, id)
-			_ = r.dao.RemoveContentFolder(folder)
-		}
-
-		return nil
-	})
+	}
+	return nil
 }
 
 // Ensure noteRepository implements domain.NoteRepository interface

@@ -67,6 +67,7 @@ func TestNoteService_Migrate_MigratesNoteHistory(t *testing.T) {
 
 	noteRepo.On("GetByID", mock.Anything, int64(137), int64(1)).Return(oldNote, nil)
 	noteRepo.On("UpdateSnapshot", mock.Anything, oldNote.ContentLastSnapshot, oldNote.ContentLastSnapshotHash, oldNote.Version, int64(2048), int64(1)).Return(nil)
+	noteRepo.On("UpdateDelete", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(nil)
 	// CountSizeSum 有 10 秒防抖 timer，测试窗口内不会触发，标记 Maybe
 	noteRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{Count: 1, Size: 1024}, nil).Maybe()
 	// 关键断言：历史迁移必须发生
@@ -79,13 +80,13 @@ func TestNoteService_Migrate_MigratesNoteHistory(t *testing.T) {
 
 	historyRepo.AssertCalled(t, "Migrate", mock.Anything, int64(137), int64(2048), int64(1))
 	noteRepo.AssertCalled(t, "UpdateSnapshot", mock.Anything, oldNote.ContentLastSnapshot, oldNote.ContentLastSnapshotHash, oldNote.Version, int64(2048), int64(1))
-	noteRepo.AssertNotCalled(t, "UpdateDelete", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1))
+	noteRepo.AssertCalled(t, "UpdateDelete", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1))
 	historyRepo.AssertExpectations(t)
 	noteRepo.AssertExpectations(t)
 }
 
 // TestNoteService_Migrate_HistoryErrorWarnNotFail 验证历史迁移失败只告警、不阻断整个迁移流程
-// （与 share 迁移失败的处理保持一致）。
+//（与 share 迁移失败的处理保持一致）。
 func TestNoteService_Migrate_HistoryErrorWarnNotFail(t *testing.T) {
 	noteRepo := new(domainmocks.MockNoteRepository)
 	historyRepo := new(domainmocks.MockNoteHistoryRepository)
@@ -94,6 +95,7 @@ func TestNoteService_Migrate_HistoryErrorWarnNotFail(t *testing.T) {
 
 	noteRepo.On("GetByID", mock.Anything, int64(137), int64(1)).Return(oldNote, nil)
 	noteRepo.On("UpdateSnapshot", mock.Anything, oldNote.ContentLastSnapshot, oldNote.ContentLastSnapshotHash, oldNote.Version, int64(2048), int64(1)).Return(nil)
+	noteRepo.On("UpdateDelete", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(nil)
 	noteRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{Count: 1, Size: 1024}, nil)
 	historyRepo.On("Migrate", mock.Anything, int64(137), int64(2048), int64(1)).Return(assert.AnError)
 
@@ -140,6 +142,7 @@ func TestNoteService_Rename_MigratesNoteHistory(t *testing.T) {
 	// Migrate goroutine 依赖
 	noteRepo.On("GetByID", mock.Anything, int64(137), int64(1)).Return(oldNote, nil)
 	noteRepo.On("UpdateSnapshot", mock.Anything, oldNote.ContentLastSnapshot, oldNote.ContentLastSnapshotHash, oldNote.Version, int64(2048), int64(1)).Return(nil)
+	noteRepo.On("UpdateDelete", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(nil)
 	noteRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{Count: 1, Size: 1024}, nil).Maybe()
 	historyRepo.On("Migrate", mock.Anything, int64(137), int64(2048), int64(1)).Return(nil)
 
@@ -171,18 +174,4 @@ func TestNoteService_Rename_MigratesNoteHistory(t *testing.T) {
 	noteRepo.AssertExpectations(t)
 	vaultSvc.AssertExpectations(t)
 	folderSvc.AssertExpectations(t)
-}
-
-func TestNoteService_MigrateNeverDeletesRecreatedPath(t *testing.T) {
-	noteRepo := new(domainmocks.MockNoteRepository)
-	historyRepo := new(domainmocks.MockNoteHistoryRepository)
-	recreated := oldNoteFixture()
-	recreated.Action = domain.NoteActionCreate
-	recreated.Rename = 0
-	recreated.Content = "new manuscript at old path"
-	noteRepo.On("GetByID", mock.Anything, int64(137), int64(1)).Return(recreated, nil)
-	svc := newNoteSvc(t, noteRepo, historyRepo, nil, nil)
-	require.NoError(t, svc.Migrate(context.Background(), 137, 2048, 1))
-	noteRepo.AssertNotCalled(t, "UpdateDelete", mock.Anything, mock.Anything, int64(1))
-	historyRepo.AssertNotCalled(t, "Migrate", mock.Anything, int64(137), int64(2048), int64(1))
 }

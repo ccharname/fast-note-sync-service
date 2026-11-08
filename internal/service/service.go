@@ -4,6 +4,8 @@
 // 本文件保留包级别的通道和消息类型定义
 package service
 
+import "sync/atomic"
+
 // NoteMigrateChannel migration task channel
 // NoteMigrateChannel 迁移任务通道
 var NoteMigrateChannel = make(chan NoteMigrateMsg, 1000)
@@ -30,5 +32,14 @@ var NoteHistoryChannel = make(chan NoteHistoryMsg, 1000)
 // NoteHistoryDelayPush pushes note to the delayed processing queue
 // NoteHistoryDelayPush 将笔记推送至延时处理队列
 func NoteHistoryDelayPush(noteID int64, uid int64) {
-	NoteHistoryChannel <- NoteHistoryMsg{NoteID: noteID, UID: uid}
+	// lucky-v2: never block a writer (it may hold the note lock) on a full history queue;
+	// history is best-effort, so drop and count instead.
+	select {
+	case NoteHistoryChannel <- NoteHistoryMsg{NoteID: noteID, UID: uid}:
+	default:
+		HistoryDropped.Add(1)
+	}
 }
+
+// HistoryDropped counts history pushes dropped because the queue was full (health counter).
+var HistoryDropped atomic.Int64

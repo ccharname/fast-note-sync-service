@@ -38,35 +38,49 @@ func (d *Dao) SaveContentToFile(folderPath string, fileName string, content stri
 	if err := os.MkdirAll(folderPath, 0755); err != nil {
 		return err
 	}
-	filePath := filepath.Join(folderPath, fileName)
-	f, err := os.CreateTemp(folderPath, ".note-*")
+	return AtomicWriteFile(folderPath, fileName, []byte(content))
+}
+
+// AtomicWriteFile writes data to dir/name via a same-directory temp file: write + fsync + rename
+// + fsync(dir). Readers see either the complete old file or the complete new one; a crash
+// mid-write leaves the old content intact (lucky-v2).
+// AtomicWriteFile 同目录临时文件写入 + fsync + rename + fsync 目录；中断时旧内容完整。
+func AtomicWriteFile(dir, name string, data []byte) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
 		return err
 	}
-	name := f.Name()
-	defer os.Remove(name)
-	if err = f.Chmod(0644); err == nil {
-		_, err = f.Write([]byte(content))
+	tmp := f.Name()
+	fail := func(e error) error {
+		f.Close()
+		os.Remove(tmp)
+		return e
 	}
-	if err == nil {
-		err = f.Sync()
+	if _, err := f.Write(data); err != nil {
+		return fail(err)
 	}
-	closeErr := f.Close()
-	if err == nil {
-		err = closeErr
+	if err := f.Chmod(0644); err != nil {
+		return fail(err)
 	}
-	if err != nil {
+	if err := f.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
 		return err
 	}
-	if err = os.Rename(name, filePath); err != nil {
+	if err := os.Rename(tmp, filepath.Join(dir, name)); err != nil {
+		os.Remove(tmp)
 		return err
 	}
-	dir, err := os.Open(folderPath)
-	if err != nil {
-		return err
+	if df, err := os.Open(dir); err == nil {
+		_ = df.Sync()
+		df.Close()
 	}
-	defer dir.Close()
-	return dir.Sync()
+	return nil
 }
 
 // loadContentFromFile loads content from a file

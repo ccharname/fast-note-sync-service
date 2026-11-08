@@ -299,6 +299,7 @@ type WebsocketClient struct {
 	ProtoVersion        int                       // Client-declared handshake protocol version, from URL query "pv"; >=2 means the client supports v2 negotiation (negotiation block in auth response, window pipelining, early pb upgrade) // 客户端声明的握手协议版本，来自 URL query "pv"；>=2 表示客户端支持 v2 协商（auth 响应携带协商块、窗口流水线、pb 提前升级）
 	PbEnabled           bool                      // Client's local protobufEnabled setting, from URL query "pb" (1/0); only meaningful when ProtoVersion>=2 // 客户端本地 protobufEnabled 设置，来自 URL query "pb"（1/0）；仅在 ProtoVersion>=2 时有意义
 	currentAction       string                    // Current action type being processed // Current action type being processed // 当前正在处理的动作类型
+	outQ                orderedQueue              // lucky-v2: ordered send queue // 有序发送队列
 	remoteAddr          string                    // Client real IP address, extracted from HTTP headers / 客户端真实 IP 地址，从 HTTP 头部提取
 }
 
@@ -1247,6 +1248,7 @@ func (w *WebsocketServer) Authorization(c *WebsocketClient, msg *WebSocketMessag
 			"gitTag":    versionInfo.GitTag,
 			"buildTime": versionInfo.BuildTime,
 			"changelog": versionInfo.Changelog,
+			"features":  []string{"serverMerge"}, // lucky-v2 capability // lucky-v2 能力声明
 		}
 
 		protobufAck := c.Protocol == "protobuf" && c.PbEnabled
@@ -1641,6 +1643,7 @@ func (w *WebsocketServer) OnClose(conn *gws.Conn, err error) {
 	// This must be performed before cleaning up other resources to ensure that all operations dependent on the context can receive the cancellation signal
 	// 这必须在清理其他 resource 之前执行，以确保所有依赖 context 的操作能够收到取消信号
 	c.cancelContext()
+	c.closeOrdered() // lucky-v2: stop the ordered writer, drop queued messages
 
 	w.RemoveClient(conn)
 

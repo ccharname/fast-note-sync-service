@@ -721,6 +721,7 @@ func (h *NoteHandler) Rename(c *gin.Context) {
 		OldPath:          oldNote.Path,
 		OldPathHash:      oldNote.PathHash,
 		UpdatedTimestamp: newNote.UpdatedTimestamp,
+		Rev:              newNote.UpdatedTimestamp,
 	}).WithVault(params.Vault), "NoteSyncRename")
 }
 

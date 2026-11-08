@@ -5,6 +5,7 @@ import (
 
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	v1 "github.com/haierkeys/fast-note-sync-service/internal/proto/v1"
+	"github.com/haierkeys/fast-note-sync-service/internal/service"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/json"
 	"google.golang.org/protobuf/proto"
@@ -13,6 +14,7 @@ import (
 // Hook registrations
 // 注册 Protobuf 相关的编解码钩子函数
 func RegisterProtobufHooks(wss *pkgapp.WebsocketServer) {
+	service.RecoveryBroadcast = func(uid int64, ev *service.MergeResult) { recoveryBroadcast(wss, uid, ev) } // lucky-v2
 	wss.EnvelopeDecoder = DeReceivePacket
 	wss.ProtobufDecoder = DeReceiveProtobufToDTO
 	wss.ProtobufEncoder = EnSendDTOToProtobuf
@@ -112,6 +114,9 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.CreateOnly = pbMsg.CreateOnly
 			dest.Context = pbMsg.Context
 			dest.IsConflictResolved = pbMsg.IsConflictResolved
+			dest.ServerMerge = pbMsg.ServerMerge
+			dest.OpID = pbMsg.OpId
+			dest.BaseSha = pbMsg.BaseSha
 			return true, nil
 		}
 	// "NoteCheck"
@@ -140,6 +145,9 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.Path = pbMsg.Path
 			dest.PathHash = pbMsg.PathHash
 			dest.Context = pbMsg.Context
+			dest.ServerMerge = pbMsg.ServerMerge
+			dest.OpID = pbMsg.OpId
+			dest.BaseSha = pbMsg.BaseSha
 			return true, nil
 		}
 	// "NoteRename"
@@ -155,6 +163,9 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.OldPath = pbMsg.OldPath
 			dest.OldPathHash = pbMsg.OldPathHash
 			dest.Context = pbMsg.Context
+			dest.ServerMerge = pbMsg.ServerMerge
+			dest.OpID = pbMsg.OpId
+			dest.BaseSha = pbMsg.BaseSha
 			return true, nil
 		}
 	// "NoteRePush"
@@ -659,7 +670,8 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				Ctime:       src.Ctime,
 				Mtime:       src.Mtime,
 				LastTime:    src.UpdatedTimestamp,
-				BaseHash:    src.BaseHash,
+				Rev:         src.Rev,
+				Sha:         src.Sha,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -673,6 +685,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				Mtime:    src.Mtime,
 				Size:     src.Size,
 				LastTime: src.UpdatedTimestamp,
+				Rev:      src.Rev,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -689,6 +702,8 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				OldPath:     src.OldPath,
 				OldPathHash: src.OldPathHash,
 				LastTime:    src.UpdatedTimestamp,
+				Rev:         src.Rev,
+				Sha:         src.Sha,
 			}
 			return proto.Marshal(pbMsg)
 		} else if m, ok := data.(map[string]interface{}); ok {
@@ -768,10 +783,17 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 	case NoteModifyAck:
 		if src, ok := data.(dto.NoteModifyAckMessage); ok {
 			pbMsg := &v1.NoteModifyAckMessage{
-				LastTime:    src.LastTime,
-				Path:        src.Path,
-				PathHash:    src.PathHash,
-				ContentHash: src.ContentHash,
+				LastTime:     src.LastTime,
+				Path:         src.Path,
+				PathHash:     src.PathHash,
+				OpId:         src.OpID,
+				Rev:          src.Rev,
+				Sha:          src.Sha,
+				Merged:       src.Merged,
+				Content:      src.Content,
+				ConflictCopy: src.ConflictCopy,
+				Rejected:     src.Rejected,
+				RejectReason: src.RejectReason,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -779,9 +801,17 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 	case NoteRenameAck:
 		if src, ok := data.(dto.NoteRenameAckMessage); ok {
 			pbMsg := &v1.NoteRenameAckMessage{
-				LastTime: src.LastTime,
-				Path:     src.Path,
-				PathHash: src.PathHash,
+				LastTime:     src.LastTime,
+				Path:         src.Path,
+				PathHash:     src.PathHash,
+				OpId:         src.OpID,
+				Rev:          src.Rev,
+				Sha:          src.Sha,
+				Merged:       src.Merged,
+				Content:      src.Content,
+				ConflictCopy: src.ConflictCopy,
+				Rejected:     src.Rejected,
+				RejectReason: src.RejectReason,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -789,9 +819,17 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 	case NoteDeleteAck:
 		if src, ok := data.(dto.NoteDeleteAckMessage); ok {
 			pbMsg := &v1.NoteDeleteAckMessage{
-				LastTime: src.LastTime,
-				Path:     src.Path,
-				PathHash: src.PathHash,
+				LastTime:     src.LastTime,
+				Path:         src.Path,
+				PathHash:     src.PathHash,
+				OpId:         src.OpID,
+				Rev:          src.Rev,
+				Sha:          src.Sha,
+				Merged:       src.Merged,
+				Content:      src.Content,
+				ConflictCopy: src.ConflictCopy,
+				Rejected:     src.Rejected,
+				RejectReason: src.RejectReason,
 			}
 			return proto.Marshal(pbMsg)
 		}

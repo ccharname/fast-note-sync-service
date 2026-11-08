@@ -328,15 +328,11 @@ func (s *noteHistoryService) RestoreFromHistory(ctx context.Context, uid int64, 
 		return nil, code.ErrorDBQuery.WithDetails(err.Error())
 	}
 
-	vault, err := s.vaultService.Get(ctx, uid, note.VaultID)
-	if err != nil {
-		return nil, err
-	}
-	ctx, unlockNote := LockNote(ctx, uid, vault.Name, note.PathHash)
-	defer unlockNote()
-	note, err = s.noteRepo.GetByID(ctx, history.NoteID, uid)
-	if err != nil {
-		return nil, err
+	// lucky-v2: serialize with other writers of this note and re-read the current state under the lock
+	// lucky-v2：与该笔记的其它写入方串行，锁内重读当前状态
+	defer lockRecover(ctx, noteLockKey(uid, note.VaultID, note.PathHash))()
+	if again, gerr := s.noteRepo.GetByID(ctx, history.NoteID, uid); gerr == nil {
+		note = again
 	}
 
 	// 3. Calculate content after this history version modification

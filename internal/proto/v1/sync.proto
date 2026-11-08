@@ -106,6 +106,9 @@ message NoteModifyOrCreateRequest {
     bool createOnly = 10;
     string context = 11;
     bool isConflictResolved = 12;
+    bool serverMerge = 13; // lucky-v2
+    string opId = 14;      // lucky-v2
+    string baseSha = 15;   // lucky-v2
 }
 
 message NoteUpdateCheckRequest {
@@ -122,6 +125,9 @@ message NoteDeleteRequest {
     string path = 2;
     string pathHash = 3;
     string context = 4;
+    string baseSha = 5;   // lucky-v2
+    string opId = 6;      // lucky-v2
+    bool serverMerge = 7;   // lucky-v2
 }
 
 message NoteRenameRequest {
@@ -131,6 +137,9 @@ message NoteRenameRequest {
     string oldPath = 4;
     string oldPathHash = 5;
     string context = 6;
+    string baseSha = 7;   // lucky-v2
+    string opId = 8;      // lucky-v2
+    bool serverMerge = 9;   // lucky-v2
 }
 
 message NoteGetRequest {
@@ -150,7 +159,8 @@ message NoteSyncModifyMessage {
     int64 ctime = 5;
     int64 mtime = 6;
     int64 lastTime = 7;
-    string baseHash = 8;
+    int64 rev = 8; // lucky-v2
+    string sha = 9; // lucky-v2
 }
 
 message NoteSyncDeleteMessage {
@@ -160,6 +170,7 @@ message NoteSyncDeleteMessage {
     int64 mtime = 4;
     int64 size = 5;
     int64 lastTime = 6;
+    int64 rev = 7; // lucky-v2
 }
 
 message NoteSyncRenameMessage {
@@ -172,6 +183,8 @@ message NoteSyncRenameMessage {
     string oldPath = 7;
     string oldPathHash = 8;
     int64 lastTime = 9;
+    int64 rev = 10; // lucky-v2
+    string sha = 11; // lucky-v2
 }
 
 message NoteSyncMtimeMessage {
@@ -201,19 +214,42 @@ message NoteModifyAckMessage {
     int64 lastTime = 1;
     string path = 2;
     string pathHash = 3;
-    string contentHash = 4;
+    string opId = 4;         // lucky-v2
+    int64 rev = 5;          // lucky-v2
+    string sha = 6;         // lucky-v2
+    bool merged = 7;         // lucky-v2
+    string content = 8;      // lucky-v2
+    string conflictCopy = 9; // lucky-v2
+    bool rejected = 10;       // lucky-v2
+    string rejectReason = 11; // lucky-v2
 }
 
 message NoteRenameAckMessage {
     int64 lastTime = 1;
     string path = 2;
     string pathHash = 3;
+    string opId = 4;         // lucky-v2
+    int64 rev = 5;          // lucky-v2
+    string sha = 6;         // lucky-v2
+    bool merged = 7;         // lucky-v2
+    string content = 8;      // lucky-v2
+    string conflictCopy = 9; // lucky-v2
+    bool rejected = 10;       // lucky-v2
+    string rejectReason = 11; // lucky-v2
 }
 
 message NoteDeleteAckMessage {
     int64 lastTime = 1;
     string path = 2;
     string pathHash = 3;
+    string opId = 4;         // lucky-v2
+    int64 rev = 5;          // lucky-v2
+    string sha = 6;         // lucky-v2
+    bool merged = 7;         // lucky-v2
+    string content = 8;      // lucky-v2
+    string conflictCopy = 9; // lucky-v2
+    bool rejected = 10;       // lucky-v2
+    string rejectReason = 11; // lucky-v2
 }
 
 // ------------------------------------

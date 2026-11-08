@@ -2,10 +2,12 @@ package websocket_router
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
+	"github.com/haierkeys/fast-note-sync-service/internal/service"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	"github.com/haierkeys/fast-note-sync-service/pkg/logger"
@@ -32,6 +34,7 @@ type syncDownloadEntry struct {
 	Window    int // 本连接协商的 W_down；0 = stop-and-wait（回滚开关） // negotiated W_down for this connection; 0 = stop-and-wait (rollback switch)
 
 	UpdatedAt time.Time // 更新时间
+	failed    bool      // Failed pages must not be acknowledged or retried in this context.
 
 	// FillContent 可选：当消息队列中携带了未填充正文的笔记（WSQueuedMessage.NoteID != 0）时，
 	// 由构造 entry 的一方（ws_note.go）注入的按需读取函数。sendSyncPage 在发送某一页前，
@@ -108,6 +111,9 @@ func syncDownloadDelete(context, typeName string) {
 // isLast page is sent, the entry is destroyed immediately and pump stops advancing. Caller must
 // hold entry.mu.
 func pump(c *pkgapp.WebsocketClient, entry *syncDownloadEntry) {
+	if entry.failed {
+		return
+	}
 	window := entry.Window
 	if window < 1 {
 		window = 1
@@ -115,6 +121,9 @@ func pump(c *pkgapp.WebsocketClient, entry *syncDownloadEntry) {
 	total := entry.totalPages()
 	for entry.SentPage < total && entry.SentPage < entry.AckedPage+window {
 		isLast := sendSyncPageFunc(c, entry)
+		if entry.failed {
+			return
+		}
 		entry.SentPage++
 		entry.UpdatedAt = time.Now()
 		if isLast {
@@ -136,6 +145,13 @@ func pump(c *pkgapp.WebsocketClient, entry *syncDownloadEntry) {
 // WebsocketClient/gws.Conn（本仓库既有测试也从不触碰真实 conn 写入路径，
 // 参见 pkg/app/websocket_client_test.go）。生产代码从不重新赋值它。
 var sendSyncPageFunc = sendSyncPage
+
+// Same-package transport seam: tests exercise real page preparation without a socket.
+var syncPageResponse = func(c *pkgapp.WebsocketClient, response *code.Code, action string) {
+	c.ToResponse(response, action)
+}
+
+var syncPageRequireFullResync = (*pkgapp.WebsocketClient).RequireFullResync
 
 // envelopePageIndex 把内部 0-based 页码映射为信封线上值：线上值 = 内部页码 + 1（1-based）。
 // 原因：WSResponse.pageIndex 是 proto3 非 optional int32，第 0 页若按 0-based 上线，pb 编码下
@@ -163,6 +179,9 @@ func envelopePageIndex(c2 *code.Code, page int) *code.Code {
 // whether to destroy the entry — pump owns both, keeping "send" and "window advance"
 // responsibilities separate. Caller must hold entry.mu (held by pump's caller).
 func sendSyncPage(c *pkgapp.WebsocketClient, entry *syncDownloadEntry) (isLast bool) {
+	if entry.failed {
+		return false
+	}
 	page := entry.SentPage
 	start := page * entry.PageSize
 	end := start + entry.PageSize
@@ -170,7 +189,9 @@ func sendSyncPage(c *pkgapp.WebsocketClient, entry *syncDownloadEntry) (isLast b
 		end = len(entry.MessageQueue)
 	}
 
-	chunk := entry.MessageQueue[start:end]
+	// Stage content outside the cached queue: rejected/cancelled jobs must not
+	// leave a partially materialized page that can later be treated as complete.
+	chunk := append([]dto.WSQueuedMessage(nil), entry.MessageQueue[start:end]...)
 	isLast = end == len(entry.MessageQueue)
 
 	// 按需回填本页内尚未填充正文的笔记消息，用后即可被后续 GC 回收，
@@ -179,6 +200,8 @@ func sendSyncPage(c *pkgapp.WebsocketClient, entry *syncDownloadEntry) (isLast b
 	// stays bounded to one page's worth of content instead of the whole queue.
 	if entry.FillContent != nil {
 		var wg sync.WaitGroup
+		var firstError error
+		var errorOnce sync.Once
 		for i := range chunk {
 			if chunk[i].NoteID == 0 {
 				continue
@@ -187,20 +210,35 @@ func sendSyncPage(c *pkgapp.WebsocketClient, entry *syncDownloadEntry) (isLast b
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_ = noteContentFillPool.Submit(c.Context(), func(ctx context.Context) error {
+				err := noteContentFillPool.Submit(c.Context(), func(ctx context.Context) error {
 					content, err := entry.FillContent(ctx, chunk[idx].NoteID)
 					if err != nil {
 						return err
 					}
-					if m, ok := chunk[idx].Data.(dto.NoteSyncModifyMessage); ok {
-						m.Content = content
-						chunk[idx].Data = m
+					m, ok := chunk[idx].Data.(dto.NoteSyncModifyMessage)
+					if !ok {
+						return errors.New("unexpected note content message")
 					}
+					m.Content = content
+					m.Sha = service.ContentSha(content) // lucky-v2
+					chunk[idx].Data = m
 					return nil
 				})
+				if err != nil {
+					errorOnce.Do(func() { firstError = err })
+				}
 			}()
 		}
 		wg.Wait()
+		if firstError != nil {
+			// Publish neither page counts nor any details. An ordinary error frame
+			// leaves clients waiting forever; 4001 aborts this sync and forces a
+			// full reconcile, including pages completed before this failure.
+			entry.failed = true
+			syncDownloadDelete(entry.Context, entry.TypeName)
+			syncPageRequireFullResync(c)
+			return false
+		}
 	}
 
 	var pageAction WebSocketSendAction
@@ -227,7 +265,7 @@ func sendSyncPage(c *pkgapp.WebsocketClient, entry *syncDownloadEntry) (isLast b
 	}
 
 	// 1. 发送 Page 页面控制指示元数据 (不含消息体，仅作元数据声明)
-	c.ToResponse(withPageIndex(code.Success.WithData(dto.SyncPageMessage{
+	syncPageResponse(c, withPageIndex(code.Success.WithData(dto.SyncPageMessage{
 		PageIndex:  page,
 		PageSize:   entry.PageSize,
 		TotalCount: len(chunk),
@@ -236,7 +274,7 @@ func sendSyncPage(c *pkgapp.WebsocketClient, entry *syncDownloadEntry) (isLast b
 
 	// 2. 紧接着逐个发送本页的所有明细消息
 	for _, msg := range chunk {
-		c.ToResponse(withPageIndex(code.Success.WithData(msg.Data)).WithVault(entry.Vault).WithContext(msg.Context), msg.Action)
+		syncPageResponse(c, withPageIndex(code.Success.WithData(msg.Data)).WithVault(entry.Vault).WithContext(msg.Context), msg.Action)
 	}
 
 	return isLast
@@ -258,6 +296,9 @@ func sendSyncPage(c *pkgapp.WebsocketClient, entry *syncDownloadEntry) (isLast b
 func handlePageAck(c *pkgapp.WebsocketClient, entry *syncDownloadEntry, pageIndex int, typeName string, log *zap.Logger, traceID string) {
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
+	if entry.failed {
+		return
+	}
 
 	if pageIndex == -1 {
 		// 首拉：Window=0 时 pump 恰好只发 1 页，与 3.5.x 前 stop-and-wait 现状逐消息等价

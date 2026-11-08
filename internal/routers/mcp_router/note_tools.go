@@ -250,6 +250,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			OldPath:          oldNote.Path,
 			OldPathHash:      oldNote.PathHash,
 			UpdatedTimestamp: newNote.UpdatedTimestamp,
+			Rev:              newNote.UpdatedTimestamp,
 		}).WithVault(vault), "NoteSyncRename")
 		fallback := fmt.Sprintf("Renamed note from %s to %s", oldNote.Path, newNote.Path)
 		return mcp.NewToolResultStructured(mcpNoteMutationOutput{

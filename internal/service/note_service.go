@@ -148,30 +148,30 @@ type NoteService interface {
 // noteService implementation of NoteService interface
 // noteService 实现 NoteService 接口
 type noteService struct {
-	userRepo       domain.UserRepository        // User repository // 用户仓库
-	noteRepo       domain.NoteRepository        // Note repository // 笔记仓库
-	noteLinkRepo   domain.NoteLinkRepository    // Note link repository // 笔记链接仓库
-	fileRepo       domain.FileRepository        // File repository // 文件仓库
-	shareRepo      domain.UserShareRepository   // Share repository for auto-revoke on delete // 分享仓库（删除时自动撤销）
+	userRepo       domain.UserRepository      // User repository // 用户仓库
+	noteRepo       domain.NoteRepository      // Note repository // 笔记仓库
+	noteLinkRepo   domain.NoteLinkRepository  // Note link repository // 笔记链接仓库
+	fileRepo       domain.FileRepository      // File repository // 文件仓库
+	shareRepo      domain.UserShareRepository // Share repository for auto-revoke on delete // 分享仓库（删除时自动撤销）
 	historyRepo    domain.NoteHistoryRepository // Note history repository // 笔记历史仓库（rename 时迁移历史归属）
-	vaultService   VaultService                 // Vault service // 仓库服务
-	folderService  FolderService                // Folder service // 文件夹服务
-	syncLogService SyncLogService               // Sync log service // 同步日志服务
-	sf             *singleflight.Group          // Singleflight group // 并发请求合并组
-	kmu            *keyedmutex.KeyedMutex       // Per-key mutex for write paths that must not share results across callers // 用于写路径的按 key 互斥锁，避免调用方之间共享结果
-	clientType     string                       // Client type // 客户端类型
-	clientName     string                       // Client name // 客户端名称
-	clientVer      string                       // Client version // 客户端版本
-	config         *ServiceConfig               // Service configuration // 服务配置
-	backupService  BackupService                // Backup service // 备份服务
-	gitSyncService GitSyncService               // Git sync service // Git 同步服务
-	countTimers    *sync.Map                    // Timers for CountSizeSum debounce // CountSizeSum 防抖计时器
+	vaultService   VaultService               // Vault service // 仓库服务
+	folderService  FolderService              // Folder service // 文件夹服务
+	syncLogService SyncLogService             // Sync log service // 同步日志服务
+	sf             *singleflight.Group        // Singleflight group // 并发请求合并组
+	kmu            *keyedmutex.KeyedMutex     // Per-key mutex for write paths that must not share results across callers // 用于写路径的按 key 互斥锁，避免调用方之间共享结果
+	clientType     string                     // Client type // 客户端类型
+	clientName     string                     // Client name // 客户端名称
+	clientVer      string                     // Client version // 客户端版本
+	config         *ServiceConfig             // Service configuration // 服务配置
+	backupService  BackupService              // Backup service // 备份服务
+	gitSyncService GitSyncService             // Git sync service // Git 同步服务
+	countTimers    *sync.Map                  // Timers for CountSizeSum debounce // CountSizeSum 防抖计时器
 }
 
 // NewNoteService creates NoteService instance
 // NewNoteService 创建 NoteService 实例
 func NewNoteService(userRepo domain.UserRepository, noteRepo domain.NoteRepository, noteLinkRepo domain.NoteLinkRepository, fileRepo domain.FileRepository, shareRepo domain.UserShareRepository, historyRepo domain.NoteHistoryRepository, vaultSvc VaultService, folderSvc FolderService, backupSvc BackupService, gitSyncSvc GitSyncService, syncLogSvc SyncLogService, config *ServiceConfig) NoteService {
-	return &noteService{
+	svc := &noteService{
 		userRepo:       userRepo,
 		noteRepo:       noteRepo,
 		noteLinkRepo:   noteLinkRepo,
@@ -188,6 +188,8 @@ func NewNoteService(userRepo domain.UserRepository, noteRepo domain.NoteReposito
 		config:         config,
 		countTimers:    &sync.Map{},
 	}
+	recoverySvc.Store(svc) // lucky-v2: roll-forward entry for writers outside noteService
+	return svc
 }
 
 // WithClient sets client info, returns new NoteService instance
@@ -357,6 +359,23 @@ func (s *noteService) evalUpdateCheck(ctx context.Context, uid int64, note *doma
 // ModifyOrCreate 创建或修改笔记。existingNote 为可选的已查到的 note（例如来自同一 pathHash 的
 // UpdateCheckWithNote），复用以避免重复查询。
 func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto.NoteModifyOrCreateRequest, mtimeCheck bool, existingNote ...*domain.Note) (bool, *dto.NoteDTO, error) {
+	// lucky-v2: take the per-note lock; a caller-prefetched note is stale if we had to wait
+	// lucky-v2：取每篇笔记的锁；若发生等待，调用方预取的 note 已过期
+	vaultID, err := s.vaultService.MustGetID(ctx, uid, params.Vault)
+	if err != nil {
+		return false, nil, err
+	}
+	// lucky-v2: a pre-read taken before the lock is stale even when the lock is free (another
+	// writer may have committed in between), so always drop it and re-read under the lock;
+	// unfinished journal intents are rolled forward first.
+	existingNote = nil
+	defer s.lockAndRecover(ctx, uid, vaultID, params.PathHash)()
+	return s.modifyOrCreateInner(ctx, uid, params, mtimeCheck, existingNote...)
+}
+
+// modifyOrCreateInner is the original ModifyOrCreate body; the caller must hold the note lock.
+// modifyOrCreateInner 为原 ModifyOrCreate 主体；调用方必须已持有笔记锁。
+func (s *noteService) modifyOrCreateInner(ctx context.Context, uid int64, params *dto.NoteModifyOrCreateRequest, mtimeCheck bool, existingNote ...*domain.Note) (bool, *dto.NoteDTO, error) {
 	// Use VaultService.MustGetID to retrieve VaultID
 	// 使用 VaultService.MustGetID 获取 VaultID
 	vaultID, err := s.vaultService.MustGetID(ctx, uid, params.Vault)
@@ -364,13 +383,10 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 		return false, nil, err
 	}
 
-	// Same-note writers (WS/REST/MCP, rename, delete) are serialized by LockNote; no-op if the caller already holds it.
-	// 同一笔记的所有写入口（WS/REST/MCP、重命名、删除）由 LockNote 串行化；调用方已持有时为空操作。
-	ctx, unlockNote := LockNote(ctx, uid, params.Vault, params.PathHash)
-	defer unlockNote()
-
 	var preFetchedNote *domain.Note
-	// Always reload after acquiring the shared write lock.
+	if len(existingNote) > 0 {
+		preFetchedNote = existingNote[0]
+	}
 
 	key := fmt.Sprintf("modify_or_create_%d_%d_%s", uid, vaultID, params.PathHash)
 	type result struct {
@@ -411,20 +427,17 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 			}
 
 			// Check if content is consistent, excluding notes marked as deleted
-			if mtimeCheck && note.Action != domain.NoteActionDelete && note.Mtime == params.Mtime && note.Content == params.Content {
+			if mtimeCheck && note.Action != domain.NoteActionDelete && note.Mtime == params.Mtime && note.ContentHash == params.ContentHash {
 				return &result{isNew: isNew, dto: nil}, nil
 			}
 			// If content is consistent but modification time is different, only update modification time
 			// 检查内容是否一致但修改时间不同，则只更新修改时间
-			if mtimeCheck && note.Mtime < params.Mtime && note.Content == params.Content {
+			if mtimeCheck && note.Mtime < params.Mtime && note.ContentHash == params.ContentHash {
 				err := s.noteRepo.UpdateActionMtime(ctx, domain.NoteActionModify, params.Mtime, note.ID, uid)
 				if err != nil {
 					return nil, code.ErrorDBQuery.WithDetails(err.Error())
 				}
-				note, err = s.noteRepo.GetByID(ctx, note.ID, uid)
-				if err != nil {
-					return nil, code.ErrorDBQuery.WithDetails(err.Error())
-				}
+				note.Mtime = params.Mtime
 				// Log mtime-only update // 记录仅 mtime 变更日志
 				if s.syncLogService != nil {
 					s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeNote, domain.SyncLogActionModify, "mtime", note.Path, note.PathHash, s.clientType, s.clientName, s.clientVer, note.Size)
@@ -535,9 +548,16 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 // Delete deletes a note
 // Delete 删除笔记
 func (s *noteService) Delete(ctx context.Context, uid int64, params *dto.NoteDeleteRequest) (*dto.NoteDTO, error) {
-	ctx, unlockNote := LockNote(ctx, uid, params.Vault, params.PathHash)
-	defer unlockNote()
+	vaultID, err := s.vaultService.MustGetID(ctx, uid, params.Vault)
+	if err != nil {
+		return nil, err
+	}
+	defer lockRecover(ctx, noteLockKey(uid, vaultID, params.PathHash))()
+	return s.deleteInner(ctx, uid, params)
+}
 
+// deleteInner is the original Delete body; the caller must hold the note lock. (lucky-v2)
+func (s *noteService) deleteInner(ctx context.Context, uid int64, params *dto.NoteDeleteRequest) (*dto.NoteDTO, error) {
 	// Use VaultService.MustGetID to retrieve VaultID // 使用 VaultService.MustGetID 获取 VaultID
 	vaultID, err := s.vaultService.MustGetID(ctx, uid, params.Vault)
 	if err != nil {
@@ -597,12 +617,10 @@ func (s *noteService) Delete(ctx context.Context, uid int64, params *dto.NoteDel
 // Restore restores a note (from recycle bin)
 // Restore 恢复笔记（从回收站恢复）
 func (s *noteService) Restore(ctx context.Context, uid int64, params *dto.NoteRestoreRequest) (*dto.NoteDTO, error) {
-	if params.PathHash == "" {
-		params.PathHash = util.EncodeHash32(params.Path)
+	// lucky-v2: lock the note for the whole restore
+	if vid, err := s.vaultService.MustGetID(ctx, uid, params.Vault); err == nil {
+		defer lockRecover(ctx, noteLockKey(uid, vid, params.PathHash))()
 	}
-	ctx, unlockNote := LockNote(ctx, uid, params.Vault, params.PathHash)
-	defer unlockNote()
-
 	// Use VaultService.MustGetID to retrieve VaultID // 使用 VaultService.MustGetID 获取 VaultID
 	vaultID, err := s.vaultService.MustGetID(ctx, uid, params.Vault)
 	if err != nil {
@@ -670,18 +688,22 @@ func (s *noteService) Rename(ctx context.Context, uid int64, params *dto.NoteRen
 	if err != nil {
 		return nil, nil, err
 	}
+	defer lockRecover(ctx, s.renameLockKeys(uid, vaultID, params)...)()
+	return s.renameInner(ctx, uid, params)
+}
+
+// renameInner is the original Rename body; the caller must hold both note locks. (lucky-v2)
+func (s *noteService) renameInner(ctx context.Context, uid int64, params *dto.NoteRenameRequest) (*dto.NoteDTO, *dto.NoteDTO, error) {
+	vaultID, err := s.vaultService.MustGetID(ctx, uid, params.Vault)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	newPath := strings.Trim(params.Path, "/")
 	newPathHash := params.PathHash
 	if newPathHash == "" {
 		newPathHash = util.EncodeHash32(newPath)
 	}
-	lockOldHash := params.OldPathHash
-	if lockOldHash == "" {
-		lockOldHash = util.EncodeHash32(strings.Trim(params.OldPath, "/"))
-	}
-	ctx, unlockNote := LockNote(ctx, uid, params.Vault, lockOldHash, newPathHash)
-	defer unlockNote()
 
 	key := fmt.Sprintf("rename_%d_%d_%s_%s", uid, vaultID, params.OldPathHash, newPathHash)
 	type result struct {
@@ -1010,9 +1032,12 @@ func (s *noteService) Migrate(ctx context.Context, oldNoteID, newNoteID int64, u
 	if err != nil {
 		return code.ErrorDBQuery.WithDetails(err.Error())
 	}
-
-	if oldNote.Action != domain.NoteActionDelete || oldNote.Rename != 1 {
-		return nil
+	// lucky-v2: serialize with writers of the old path, re-read under the lock
+	// lucky-v2：与旧路径的写入方串行，锁内重读
+	unlockOld := lockRecover(ctx, noteLockKey(uid, oldNote.VaultID, oldNote.PathHash))
+	defer unlockOld()
+	if again, gerr := s.noteRepo.GetByID(ctx, oldNoteID, uid); gerr == nil {
+		oldNote = again
 	}
 
 	// Migrate ContentLastSnapshot and Version from old note to new note
@@ -1023,8 +1048,18 @@ func (s *noteService) Migrate(ctx context.Context, oldNoteID, newNoteID int64, u
 		return code.ErrorDBQuery.WithDetails(err.Error())
 	}
 
-	// Rename already committed its tombstone before queuing migration. Never delete
-	// the old ID again here: the user may have recreated that path in the meantime.
+	// Mark old note as deleted, and mark as rename deleted
+	// Mark old note as deleted, and mark as rename deleted
+	// 标记删除旧笔记，并标记是 rename 删除的笔记
+	// lucky-v2: if the old path was re-created meanwhile (record reused), do not delete it again
+	// lucky-v2：若旧路径期间已被重建（复用记录），不再次删除
+	if oldNote.Action == domain.NoteActionDelete {
+		oldNote.Rename = 1
+		err = s.noteRepo.UpdateDelete(ctx, oldNote, uid)
+		if err != nil {
+			return code.ErrorDBQuery.WithDetails(err.Error())
+		}
+	}
 
 	// Migrate share records: update res_id and resources from old note ID to new note ID
 	// Migrate share records: update res_id and resources from old note ID to new note ID
@@ -1075,12 +1110,6 @@ func (s *noteService) Sync(ctx context.Context, uid int64, params *dto.NoteSyncR
 
 // PatchFrontmatter patches note frontmatter with updates and removes specified keys
 func (s *noteService) PatchFrontmatter(ctx context.Context, uid int64, params *dto.NotePatchFrontmatterRequest) (*dto.NoteDTO, error) {
-	if params.PathHash == "" {
-		params.PathHash = util.EncodeHash32(params.Path)
-	}
-	ctx, unlockNote := LockNote(ctx, uid, params.Vault, params.PathHash)
-	defer unlockNote()
-
 	vaultID, err := s.vaultService.MustGetID(ctx, uid, params.Vault)
 	if err != nil {
 		return nil, err
@@ -1089,6 +1118,7 @@ func (s *noteService) PatchFrontmatter(ctx context.Context, uid int64, params *d
 	if params.PathHash == "" {
 		params.PathHash = util.EncodeHash32(params.Path)
 	}
+	defer lockRecover(ctx, noteLockKey(uid, vaultID, params.PathHash))() // lucky-v2
 
 	note, err := s.noteRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
 	if err != nil {
@@ -1121,19 +1151,13 @@ func (s *noteService) PatchFrontmatter(ctx context.Context, uid int64, params *d
 		Ctime:       note.Ctime,
 	}
 
-	_, result, err := s.ModifyOrCreate(ctx, uid, modifyParams, false)
+	_, result, err := s.modifyOrCreateInner(ctx, uid, modifyParams, false)
 	return result, err
 }
 
 // AppendContent appends content to the end of a note
 // AppendContent 在笔记末尾追加内容
 func (s *noteService) AppendContent(ctx context.Context, uid int64, params *dto.NoteAppendRequest) (*dto.NoteDTO, error) {
-	if params.PathHash == "" {
-		params.PathHash = util.EncodeHash32(params.Path)
-	}
-	ctx, unlockNote := LockNote(ctx, uid, params.Vault, params.PathHash)
-	defer unlockNote()
-
 	vaultID, err := s.vaultService.MustGetID(ctx, uid, params.Vault)
 	if err != nil {
 		return nil, err
@@ -1142,6 +1166,7 @@ func (s *noteService) AppendContent(ctx context.Context, uid int64, params *dto.
 	if params.PathHash == "" {
 		params.PathHash = util.EncodeHash32(params.Path)
 	}
+	defer lockRecover(ctx, noteLockKey(uid, vaultID, params.PathHash))() // lucky-v2
 
 	note, err := s.noteRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
 	if err != nil {
@@ -1167,19 +1192,13 @@ func (s *noteService) AppendContent(ctx context.Context, uid int64, params *dto.
 		Ctime:       note.Ctime,
 	}
 
-	_, result, err := s.ModifyOrCreate(ctx, uid, modifyParams, false)
+	_, result, err := s.modifyOrCreateInner(ctx, uid, modifyParams, false)
 	return result, err
 }
 
 // PrependContent prepends content to a note (after frontmatter if present)
 // PrependContent 在笔记开头插入内容（如果存在 Frontmatter 则在之后插入）
 func (s *noteService) PrependContent(ctx context.Context, uid int64, params *dto.NotePrependRequest) (*dto.NoteDTO, error) {
-	if params.PathHash == "" {
-		params.PathHash = util.EncodeHash32(params.Path)
-	}
-	ctx, unlockNote := LockNote(ctx, uid, params.Vault, params.PathHash)
-	defer unlockNote()
-
 	vaultID, err := s.vaultService.MustGetID(ctx, uid, params.Vault)
 	if err != nil {
 		return nil, err
@@ -1188,6 +1207,7 @@ func (s *noteService) PrependContent(ctx context.Context, uid int64, params *dto
 	if params.PathHash == "" {
 		params.PathHash = util.EncodeHash32(params.Path)
 	}
+	defer lockRecover(ctx, noteLockKey(uid, vaultID, params.PathHash))() // lucky-v2
 
 	note, err := s.noteRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
 	if err != nil {
@@ -1226,19 +1246,13 @@ func (s *noteService) PrependContent(ctx context.Context, uid int64, params *dto
 		Ctime:       note.Ctime,
 	}
 
-	_, result, err := s.ModifyOrCreate(ctx, uid, modifyParams, false)
+	_, result, err := s.modifyOrCreateInner(ctx, uid, modifyParams, false)
 	return result, err
 }
 
 // ReplaceContent performs find/replace in a note
 // ReplaceContent 在笔记中执行查找/替换
 func (s *noteService) ReplaceContent(ctx context.Context, uid int64, params *dto.NoteReplaceRequest) (*dto.NoteReplaceResponse, error) {
-	if params.PathHash == "" {
-		params.PathHash = util.EncodeHash32(params.Path)
-	}
-	ctx, unlockNote := LockNote(ctx, uid, params.Vault, params.PathHash)
-	defer unlockNote()
-
 	vaultID, err := s.vaultService.MustGetID(ctx, uid, params.Vault)
 	if err != nil {
 		return nil, err
@@ -1247,6 +1261,7 @@ func (s *noteService) ReplaceContent(ctx context.Context, uid int64, params *dto
 	if params.PathHash == "" {
 		params.PathHash = util.EncodeHash32(params.Path)
 	}
+	defer lockRecover(ctx, noteLockKey(uid, vaultID, params.PathHash))() // lucky-v2
 
 	note, err := s.noteRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
 	if err != nil {
@@ -1327,7 +1342,7 @@ func (s *noteService) ReplaceContent(ctx context.Context, uid int64, params *dto
 		Ctime:       note.Ctime,
 	}
 
-	_, result, err := s.ModifyOrCreate(ctx, uid, modifyParams, false)
+	_, result, err := s.modifyOrCreateInner(ctx, uid, modifyParams, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1513,57 +1528,3 @@ func (s *noteService) CleanDuplicateNotesAll(ctx context.Context) error {
 // Ensure noteService implements NoteService interface
 // 确保 noteService 实现了 NoteService interface
 var _ NoteService = (*noteService)(nil)
-
-// FinalizeReliableRename completes a journaled rename after its target manuscript
-// is durable. Unlike Delete, this preserves active shares for migration.
-func (s *noteService) FinalizeReliableRename(ctx context.Context, uid int64, oldDTO, newDTO *dto.NoteDTO) error {
-	if oldDTO == nil || newDTO == nil {
-		return fmt.Errorf("missing rename notes")
-	}
-	old, err := s.noteRepo.GetByID(ctx, oldDTO.ID, uid)
-	if err != nil {
-		return err
-	}
-	target, err := s.noteRepo.GetByID(ctx, newDTO.ID, uid)
-	if err != nil {
-		return err
-	}
-	if old.Path != oldDTO.Path || target.Path != newDTO.Path || target.Action == domain.NoteActionDelete || target.Content != newDTO.Content {
-		return fmt.Errorf("rename finalization state changed")
-	}
-	changed := old.Action != domain.NoteActionDelete || old.Rename != 1
-	if old.Action != domain.NoteActionDelete && (old.Content != oldDTO.Content || old.UpdatedTimestamp != oldDTO.UpdatedTimestamp) {
-		return fmt.Errorf("rename source changed before finalization")
-	}
-	if changed {
-		old.Action = domain.NoteActionDelete
-		old.Rename = 1
-		old.ClientName = s.clientName
-		old.ClientType = s.clientType
-		old.ClientVersion = s.clientVer
-		if err = s.noteRepo.UpdateDelete(ctx, old, uid); err != nil {
-			return err
-		}
-	}
-	*oldDTO = *s.domainToDTO(old)
-	if err = s.Migrate(ctx, old.ID, target.ID, uid); err != nil {
-		return err
-	}
-	if changed {
-		if s.syncLogService != nil {
-			s.syncLogService.Log(uid, old.VaultID, domain.SyncLogTypeNote, domain.SyncLogActionRename, "path", target.Path, target.PathHash, s.clientType, s.clientName, s.clientVer, target.Size)
-		}
-		if s.folderService != nil {
-			if cleanupErr := s.folderService.CleanupEmptyAncestors(ctx, uid, old.VaultID, old.Path); cleanupErr != nil {
-				zap.L().Warn("reliable rename folder cleanup failed", zap.Error(cleanupErr))
-			}
-		}
-		if s.backupService != nil {
-			go s.backupService.NotifyUpdated(uid)
-		}
-		if s.gitSyncService != nil {
-			go s.gitSyncService.NotifyUpdated(uid, old.VaultID)
-		}
-	}
-	return nil
-}

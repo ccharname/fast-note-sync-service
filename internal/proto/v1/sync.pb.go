@@ -778,6 +778,9 @@ type NoteModifyOrCreateRequest struct {
 	CreateOnly         bool                   `protobuf:"varint,10,opt,name=createOnly,proto3" json:"createOnly,omitempty"`
 	Context            string                 `protobuf:"bytes,11,opt,name=context,proto3" json:"context,omitempty"`
 	IsConflictResolved bool                   `protobuf:"varint,12,opt,name=isConflictResolved,proto3" json:"isConflictResolved,omitempty"`
+	ServerMerge        bool                   `protobuf:"varint,13,opt,name=serverMerge,proto3" json:"serverMerge,omitempty"` // lucky-v2
+	OpId               string                 `protobuf:"bytes,14,opt,name=opId,proto3" json:"opId,omitempty"`                // lucky-v2
+	BaseSha            string                 `protobuf:"bytes,15,opt,name=baseSha,proto3" json:"baseSha,omitempty"`          // lucky-v2
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -896,6 +899,27 @@ func (x *NoteModifyOrCreateRequest) GetIsConflictResolved() bool {
 	return false
 }
 
+func (x *NoteModifyOrCreateRequest) GetServerMerge() bool {
+	if x != nil {
+		return x.ServerMerge
+	}
+	return false
+}
+
+func (x *NoteModifyOrCreateRequest) GetOpId() string {
+	if x != nil {
+		return x.OpId
+	}
+	return ""
+}
+
+func (x *NoteModifyOrCreateRequest) GetBaseSha() string {
+	if x != nil {
+		return x.BaseSha
+	}
+	return ""
+}
+
 type NoteUpdateCheckRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Vault         string                 `protobuf:"bytes,1,opt,name=vault,proto3" json:"vault,omitempty"`
@@ -986,6 +1010,9 @@ type NoteDeleteRequest struct {
 	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
 	PathHash      string                 `protobuf:"bytes,3,opt,name=pathHash,proto3" json:"pathHash,omitempty"`
 	Context       string                 `protobuf:"bytes,4,opt,name=context,proto3" json:"context,omitempty"`
+	BaseSha       string                 `protobuf:"bytes,5,opt,name=baseSha,proto3" json:"baseSha,omitempty"`          // lucky-v2
+	OpId          string                 `protobuf:"bytes,6,opt,name=opId,proto3" json:"opId,omitempty"`                // lucky-v2
+	ServerMerge   bool                   `protobuf:"varint,7,opt,name=serverMerge,proto3" json:"serverMerge,omitempty"` // lucky-v2
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1048,6 +1075,27 @@ func (x *NoteDeleteRequest) GetContext() string {
 	return ""
 }
 
+func (x *NoteDeleteRequest) GetBaseSha() string {
+	if x != nil {
+		return x.BaseSha
+	}
+	return ""
+}
+
+func (x *NoteDeleteRequest) GetOpId() string {
+	if x != nil {
+		return x.OpId
+	}
+	return ""
+}
+
+func (x *NoteDeleteRequest) GetServerMerge() bool {
+	if x != nil {
+		return x.ServerMerge
+	}
+	return false
+}
+
 type NoteRenameRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Vault         string                 `protobuf:"bytes,1,opt,name=vault,proto3" json:"vault,omitempty"`
@@ -1056,6 +1104,9 @@ type NoteRenameRequest struct {
 	OldPath       string                 `protobuf:"bytes,4,opt,name=oldPath,proto3" json:"oldPath,omitempty"`
 	OldPathHash   string                 `protobuf:"bytes,5,opt,name=oldPathHash,proto3" json:"oldPathHash,omitempty"`
 	Context       string                 `protobuf:"bytes,6,opt,name=context,proto3" json:"context,omitempty"`
+	BaseSha       string                 `protobuf:"bytes,7,opt,name=baseSha,proto3" json:"baseSha,omitempty"`          // lucky-v2
+	OpId          string                 `protobuf:"bytes,8,opt,name=opId,proto3" json:"opId,omitempty"`                // lucky-v2
+	ServerMerge   bool                   `protobuf:"varint,9,opt,name=serverMerge,proto3" json:"serverMerge,omitempty"` // lucky-v2
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1130,6 +1181,27 @@ func (x *NoteRenameRequest) GetContext() string {
 		return x.Context
 	}
 	return ""
+}
+
+func (x *NoteRenameRequest) GetBaseSha() string {
+	if x != nil {
+		return x.BaseSha
+	}
+	return ""
+}
+
+func (x *NoteRenameRequest) GetOpId() string {
+	if x != nil {
+		return x.OpId
+	}
+	return ""
+}
+
+func (x *NoteRenameRequest) GetServerMerge() bool {
+	if x != nil {
+		return x.ServerMerge
+	}
+	return false
 }
 
 type NoteGetRequest struct {
@@ -1209,7 +1281,8 @@ type NoteSyncModifyMessage struct {
 	Ctime         int64                  `protobuf:"varint,5,opt,name=ctime,proto3" json:"ctime,omitempty"`
 	Mtime         int64                  `protobuf:"varint,6,opt,name=mtime,proto3" json:"mtime,omitempty"`
 	LastTime      int64                  `protobuf:"varint,7,opt,name=lastTime,proto3" json:"lastTime,omitempty"`
-	BaseHash      string                 `protobuf:"bytes,8,opt,name=baseHash,proto3" json:"baseHash,omitempty"`
+	Rev           int64                  `protobuf:"varint,8,opt,name=rev,proto3" json:"rev,omitempty"` // lucky-v2
+	Sha           string                 `protobuf:"bytes,9,opt,name=sha,proto3" json:"sha,omitempty"`  // lucky-v2
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1293,9 +1366,16 @@ func (x *NoteSyncModifyMessage) GetLastTime() int64 {
 	return 0
 }
 
-func (x *NoteSyncModifyMessage) GetBaseHash() string {
+func (x *NoteSyncModifyMessage) GetRev() int64 {
 	if x != nil {
-		return x.BaseHash
+		return x.Rev
+	}
+	return 0
+}
+
+func (x *NoteSyncModifyMessage) GetSha() string {
+	if x != nil {
+		return x.Sha
 	}
 	return ""
 }
@@ -1308,6 +1388,7 @@ type NoteSyncDeleteMessage struct {
 	Mtime         int64                  `protobuf:"varint,4,opt,name=mtime,proto3" json:"mtime,omitempty"`
 	Size          int64                  `protobuf:"varint,5,opt,name=size,proto3" json:"size,omitempty"`
 	LastTime      int64                  `protobuf:"varint,6,opt,name=lastTime,proto3" json:"lastTime,omitempty"`
+	Rev           int64                  `protobuf:"varint,7,opt,name=rev,proto3" json:"rev,omitempty"` // lucky-v2
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1384,6 +1465,13 @@ func (x *NoteSyncDeleteMessage) GetLastTime() int64 {
 	return 0
 }
 
+func (x *NoteSyncDeleteMessage) GetRev() int64 {
+	if x != nil {
+		return x.Rev
+	}
+	return 0
+}
+
 type NoteSyncRenameMessage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
@@ -1395,6 +1483,8 @@ type NoteSyncRenameMessage struct {
 	OldPath       string                 `protobuf:"bytes,7,opt,name=oldPath,proto3" json:"oldPath,omitempty"`
 	OldPathHash   string                 `protobuf:"bytes,8,opt,name=oldPathHash,proto3" json:"oldPathHash,omitempty"`
 	LastTime      int64                  `protobuf:"varint,9,opt,name=lastTime,proto3" json:"lastTime,omitempty"`
+	Rev           int64                  `protobuf:"varint,10,opt,name=rev,proto3" json:"rev,omitempty"` // lucky-v2
+	Sha           string                 `protobuf:"bytes,11,opt,name=sha,proto3" json:"sha,omitempty"`  // lucky-v2
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1490,6 +1580,20 @@ func (x *NoteSyncRenameMessage) GetLastTime() int64 {
 		return x.LastTime
 	}
 	return 0
+}
+
+func (x *NoteSyncRenameMessage) GetRev() int64 {
+	if x != nil {
+		return x.Rev
+	}
+	return 0
+}
+
+func (x *NoteSyncRenameMessage) GetSha() string {
+	if x != nil {
+		return x.Sha
+	}
+	return ""
 }
 
 type NoteSyncMtimeMessage struct {
@@ -1717,7 +1821,14 @@ type NoteModifyAckMessage struct {
 	LastTime      int64                  `protobuf:"varint,1,opt,name=lastTime,proto3" json:"lastTime,omitempty"`
 	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
 	PathHash      string                 `protobuf:"bytes,3,opt,name=pathHash,proto3" json:"pathHash,omitempty"`
-	ContentHash   string                 `protobuf:"bytes,4,opt,name=contentHash,proto3" json:"contentHash,omitempty"`
+	OpId          string                 `protobuf:"bytes,4,opt,name=opId,proto3" json:"opId,omitempty"`                  // lucky-v2
+	Rev           int64                  `protobuf:"varint,5,opt,name=rev,proto3" json:"rev,omitempty"`                   // lucky-v2
+	Sha           string                 `protobuf:"bytes,6,opt,name=sha,proto3" json:"sha,omitempty"`                    // lucky-v2
+	Merged        bool                   `protobuf:"varint,7,opt,name=merged,proto3" json:"merged,omitempty"`             // lucky-v2
+	Content       string                 `protobuf:"bytes,8,opt,name=content,proto3" json:"content,omitempty"`            // lucky-v2
+	ConflictCopy  string                 `protobuf:"bytes,9,opt,name=conflictCopy,proto3" json:"conflictCopy,omitempty"`  // lucky-v2
+	Rejected      bool                   `protobuf:"varint,10,opt,name=rejected,proto3" json:"rejected,omitempty"`        // lucky-v2
+	RejectReason  string                 `protobuf:"bytes,11,opt,name=rejectReason,proto3" json:"rejectReason,omitempty"` // lucky-v2
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1773,9 +1884,58 @@ func (x *NoteModifyAckMessage) GetPathHash() string {
 	return ""
 }
 
-func (x *NoteModifyAckMessage) GetContentHash() string {
+func (x *NoteModifyAckMessage) GetOpId() string {
 	if x != nil {
-		return x.ContentHash
+		return x.OpId
+	}
+	return ""
+}
+
+func (x *NoteModifyAckMessage) GetRev() int64 {
+	if x != nil {
+		return x.Rev
+	}
+	return 0
+}
+
+func (x *NoteModifyAckMessage) GetSha() string {
+	if x != nil {
+		return x.Sha
+	}
+	return ""
+}
+
+func (x *NoteModifyAckMessage) GetMerged() bool {
+	if x != nil {
+		return x.Merged
+	}
+	return false
+}
+
+func (x *NoteModifyAckMessage) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *NoteModifyAckMessage) GetConflictCopy() string {
+	if x != nil {
+		return x.ConflictCopy
+	}
+	return ""
+}
+
+func (x *NoteModifyAckMessage) GetRejected() bool {
+	if x != nil {
+		return x.Rejected
+	}
+	return false
+}
+
+func (x *NoteModifyAckMessage) GetRejectReason() string {
+	if x != nil {
+		return x.RejectReason
 	}
 	return ""
 }
@@ -1785,6 +1945,14 @@ type NoteRenameAckMessage struct {
 	LastTime      int64                  `protobuf:"varint,1,opt,name=lastTime,proto3" json:"lastTime,omitempty"`
 	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
 	PathHash      string                 `protobuf:"bytes,3,opt,name=pathHash,proto3" json:"pathHash,omitempty"`
+	OpId          string                 `protobuf:"bytes,4,opt,name=opId,proto3" json:"opId,omitempty"`                  // lucky-v2
+	Rev           int64                  `protobuf:"varint,5,opt,name=rev,proto3" json:"rev,omitempty"`                   // lucky-v2
+	Sha           string                 `protobuf:"bytes,6,opt,name=sha,proto3" json:"sha,omitempty"`                    // lucky-v2
+	Merged        bool                   `protobuf:"varint,7,opt,name=merged,proto3" json:"merged,omitempty"`             // lucky-v2
+	Content       string                 `protobuf:"bytes,8,opt,name=content,proto3" json:"content,omitempty"`            // lucky-v2
+	ConflictCopy  string                 `protobuf:"bytes,9,opt,name=conflictCopy,proto3" json:"conflictCopy,omitempty"`  // lucky-v2
+	Rejected      bool                   `protobuf:"varint,10,opt,name=rejected,proto3" json:"rejected,omitempty"`        // lucky-v2
+	RejectReason  string                 `protobuf:"bytes,11,opt,name=rejectReason,proto3" json:"rejectReason,omitempty"` // lucky-v2
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1840,11 +2008,75 @@ func (x *NoteRenameAckMessage) GetPathHash() string {
 	return ""
 }
 
+func (x *NoteRenameAckMessage) GetOpId() string {
+	if x != nil {
+		return x.OpId
+	}
+	return ""
+}
+
+func (x *NoteRenameAckMessage) GetRev() int64 {
+	if x != nil {
+		return x.Rev
+	}
+	return 0
+}
+
+func (x *NoteRenameAckMessage) GetSha() string {
+	if x != nil {
+		return x.Sha
+	}
+	return ""
+}
+
+func (x *NoteRenameAckMessage) GetMerged() bool {
+	if x != nil {
+		return x.Merged
+	}
+	return false
+}
+
+func (x *NoteRenameAckMessage) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *NoteRenameAckMessage) GetConflictCopy() string {
+	if x != nil {
+		return x.ConflictCopy
+	}
+	return ""
+}
+
+func (x *NoteRenameAckMessage) GetRejected() bool {
+	if x != nil {
+		return x.Rejected
+	}
+	return false
+}
+
+func (x *NoteRenameAckMessage) GetRejectReason() string {
+	if x != nil {
+		return x.RejectReason
+	}
+	return ""
+}
+
 type NoteDeleteAckMessage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	LastTime      int64                  `protobuf:"varint,1,opt,name=lastTime,proto3" json:"lastTime,omitempty"`
 	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
 	PathHash      string                 `protobuf:"bytes,3,opt,name=pathHash,proto3" json:"pathHash,omitempty"`
+	OpId          string                 `protobuf:"bytes,4,opt,name=opId,proto3" json:"opId,omitempty"`                  // lucky-v2
+	Rev           int64                  `protobuf:"varint,5,opt,name=rev,proto3" json:"rev,omitempty"`                   // lucky-v2
+	Sha           string                 `protobuf:"bytes,6,opt,name=sha,proto3" json:"sha,omitempty"`                    // lucky-v2
+	Merged        bool                   `protobuf:"varint,7,opt,name=merged,proto3" json:"merged,omitempty"`             // lucky-v2
+	Content       string                 `protobuf:"bytes,8,opt,name=content,proto3" json:"content,omitempty"`            // lucky-v2
+	ConflictCopy  string                 `protobuf:"bytes,9,opt,name=conflictCopy,proto3" json:"conflictCopy,omitempty"`  // lucky-v2
+	Rejected      bool                   `protobuf:"varint,10,opt,name=rejected,proto3" json:"rejected,omitempty"`        // lucky-v2
+	RejectReason  string                 `protobuf:"bytes,11,opt,name=rejectReason,proto3" json:"rejectReason,omitempty"` // lucky-v2
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1896,6 +2128,62 @@ func (x *NoteDeleteAckMessage) GetPath() string {
 func (x *NoteDeleteAckMessage) GetPathHash() string {
 	if x != nil {
 		return x.PathHash
+	}
+	return ""
+}
+
+func (x *NoteDeleteAckMessage) GetOpId() string {
+	if x != nil {
+		return x.OpId
+	}
+	return ""
+}
+
+func (x *NoteDeleteAckMessage) GetRev() int64 {
+	if x != nil {
+		return x.Rev
+	}
+	return 0
+}
+
+func (x *NoteDeleteAckMessage) GetSha() string {
+	if x != nil {
+		return x.Sha
+	}
+	return ""
+}
+
+func (x *NoteDeleteAckMessage) GetMerged() bool {
+	if x != nil {
+		return x.Merged
+	}
+	return false
+}
+
+func (x *NoteDeleteAckMessage) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *NoteDeleteAckMessage) GetConflictCopy() string {
+	if x != nil {
+		return x.ConflictCopy
+	}
+	return ""
+}
+
+func (x *NoteDeleteAckMessage) GetRejected() bool {
+	if x != nil {
+		return x.Rejected
+	}
+	return false
+}
+
+func (x *NoteDeleteAckMessage) GetRejectReason() string {
+	if x != nil {
+		return x.RejectReason
 	}
 	return ""
 }
@@ -5893,7 +6181,7 @@ const file_internal_proto_v1_sync_proto_rawDesc = "" +
 	"\n" +
 	"batchIndex\x18\a \x01(\x05R\n" +
 	"batchIndex\x12\"\n" +
-	"\ftotalBatches\x18\b \x01(\x05R\ftotalBatches\"\xf9\x02\n" +
+	"\ftotalBatches\x18\b \x01(\x05R\ftotalBatches\"\xc9\x03\n" +
 	"\x19NoteModifyOrCreateRequest\x12\x14\n" +
 	"\x05vault\x18\x01 \x01(\tR\x05vault\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1a\n" +
@@ -5909,31 +6197,40 @@ const file_internal_proto_v1_sync_proto_rawDesc = "" +
 	" \x01(\bR\n" +
 	"createOnly\x12\x18\n" +
 	"\acontext\x18\v \x01(\tR\acontext\x12.\n" +
-	"\x12isConflictResolved\x18\f \x01(\bR\x12isConflictResolved\"\xac\x01\n" +
+	"\x12isConflictResolved\x18\f \x01(\bR\x12isConflictResolved\x12 \n" +
+	"\vserverMerge\x18\r \x01(\bR\vserverMerge\x12\x12\n" +
+	"\x04opId\x18\x0e \x01(\tR\x04opId\x12\x18\n" +
+	"\abaseSha\x18\x0f \x01(\tR\abaseSha\"\xac\x01\n" +
 	"\x16NoteUpdateCheckRequest\x12\x14\n" +
 	"\x05vault\x18\x01 \x01(\tR\x05vault\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1a\n" +
 	"\bpathHash\x18\x03 \x01(\tR\bpathHash\x12 \n" +
 	"\vcontentHash\x18\x04 \x01(\tR\vcontentHash\x12\x14\n" +
 	"\x05ctime\x18\x05 \x01(\x03R\x05ctime\x12\x14\n" +
-	"\x05mtime\x18\x06 \x01(\x03R\x05mtime\"s\n" +
+	"\x05mtime\x18\x06 \x01(\x03R\x05mtime\"\xc3\x01\n" +
 	"\x11NoteDeleteRequest\x12\x14\n" +
 	"\x05vault\x18\x01 \x01(\tR\x05vault\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1a\n" +
 	"\bpathHash\x18\x03 \x01(\tR\bpathHash\x12\x18\n" +
-	"\acontext\x18\x04 \x01(\tR\acontext\"\xaf\x01\n" +
+	"\acontext\x18\x04 \x01(\tR\acontext\x12\x18\n" +
+	"\abaseSha\x18\x05 \x01(\tR\abaseSha\x12\x12\n" +
+	"\x04opId\x18\x06 \x01(\tR\x04opId\x12 \n" +
+	"\vserverMerge\x18\a \x01(\bR\vserverMerge\"\xff\x01\n" +
 	"\x11NoteRenameRequest\x12\x14\n" +
 	"\x05vault\x18\x01 \x01(\tR\x05vault\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1a\n" +
 	"\bpathHash\x18\x03 \x01(\tR\bpathHash\x12\x18\n" +
 	"\aoldPath\x18\x04 \x01(\tR\aoldPath\x12 \n" +
 	"\voldPathHash\x18\x05 \x01(\tR\voldPathHash\x12\x18\n" +
-	"\acontext\x18\x06 \x01(\tR\acontext\"t\n" +
+	"\acontext\x18\x06 \x01(\tR\acontext\x12\x18\n" +
+	"\abaseSha\x18\a \x01(\tR\abaseSha\x12\x12\n" +
+	"\x04opId\x18\b \x01(\tR\x04opId\x12 \n" +
+	"\vserverMerge\x18\t \x01(\bR\vserverMerge\"t\n" +
 	"\x0eNoteGetRequest\x12\x14\n" +
 	"\x05vault\x18\x01 \x01(\tR\x05vault\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1a\n" +
 	"\bpathHash\x18\x03 \x01(\tR\bpathHash\x12\x1c\n" +
-	"\tisRecycle\x18\x04 \x01(\bR\tisRecycle\"\xe7\x01\n" +
+	"\tisRecycle\x18\x04 \x01(\bR\tisRecycle\"\xef\x01\n" +
 	"\x15NoteSyncModifyMessage\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x1a\n" +
 	"\bpathHash\x18\x02 \x01(\tR\bpathHash\x12\x18\n" +
@@ -5941,15 +6238,17 @@ const file_internal_proto_v1_sync_proto_rawDesc = "" +
 	"\vcontentHash\x18\x04 \x01(\tR\vcontentHash\x12\x14\n" +
 	"\x05ctime\x18\x05 \x01(\x03R\x05ctime\x12\x14\n" +
 	"\x05mtime\x18\x06 \x01(\x03R\x05mtime\x12\x1a\n" +
-	"\blastTime\x18\a \x01(\x03R\blastTime\x12\x1a\n" +
-	"\bbaseHash\x18\b \x01(\tR\bbaseHash\"\xa3\x01\n" +
+	"\blastTime\x18\a \x01(\x03R\blastTime\x12\x10\n" +
+	"\x03rev\x18\b \x01(\x03R\x03rev\x12\x10\n" +
+	"\x03sha\x18\t \x01(\tR\x03sha\"\xb5\x01\n" +
 	"\x15NoteSyncDeleteMessage\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x1a\n" +
 	"\bpathHash\x18\x02 \x01(\tR\bpathHash\x12\x14\n" +
 	"\x05ctime\x18\x03 \x01(\x03R\x05ctime\x12\x14\n" +
 	"\x05mtime\x18\x04 \x01(\x03R\x05mtime\x12\x12\n" +
 	"\x04size\x18\x05 \x01(\x03R\x04size\x12\x1a\n" +
-	"\blastTime\x18\x06 \x01(\x03R\blastTime\"\x81\x02\n" +
+	"\blastTime\x18\x06 \x01(\x03R\blastTime\x12\x10\n" +
+	"\x03rev\x18\a \x01(\x03R\x03rev\"\xa5\x02\n" +
 	"\x15NoteSyncRenameMessage\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x1a\n" +
 	"\bpathHash\x18\x02 \x01(\tR\bpathHash\x12 \n" +
@@ -5959,7 +6258,10 @@ const file_internal_proto_v1_sync_proto_rawDesc = "" +
 	"\x04size\x18\x06 \x01(\x03R\x04size\x12\x18\n" +
 	"\aoldPath\x18\a \x01(\tR\aoldPath\x12 \n" +
 	"\voldPathHash\x18\b \x01(\tR\voldPathHash\x12\x1a\n" +
-	"\blastTime\x18\t \x01(\x03R\blastTime\"r\n" +
+	"\blastTime\x18\t \x01(\x03R\blastTime\x12\x10\n" +
+	"\x03rev\x18\n" +
+	" \x01(\x03R\x03rev\x12\x10\n" +
+	"\x03sha\x18\v \x01(\tR\x03sha\"r\n" +
 	"\x14NoteSyncMtimeMessage\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x14\n" +
 	"\x05ctime\x18\x02 \x01(\x03R\x05ctime\x12\x14\n" +
@@ -5978,20 +6280,46 @@ const file_internal_proto_v1_sync_proto_rawDesc = "" +
 	"\vbaseContent\x18\x04 \x01(\tR\vbaseContent\x12\x1e\n" +
 	"\n" +
 	"serverHash\x18\x05 \x01(\tR\n" +
-	"serverHash\"\x84\x01\n" +
+	"serverHash\"\xb0\x02\n" +
 	"\x14NoteModifyAckMessage\x12\x1a\n" +
 	"\blastTime\x18\x01 \x01(\x03R\blastTime\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1a\n" +
-	"\bpathHash\x18\x03 \x01(\tR\bpathHash\x12 \n" +
-	"\vcontentHash\x18\x04 \x01(\tR\vcontentHash\"b\n" +
+	"\bpathHash\x18\x03 \x01(\tR\bpathHash\x12\x12\n" +
+	"\x04opId\x18\x04 \x01(\tR\x04opId\x12\x10\n" +
+	"\x03rev\x18\x05 \x01(\x03R\x03rev\x12\x10\n" +
+	"\x03sha\x18\x06 \x01(\tR\x03sha\x12\x16\n" +
+	"\x06merged\x18\a \x01(\bR\x06merged\x12\x18\n" +
+	"\acontent\x18\b \x01(\tR\acontent\x12\"\n" +
+	"\fconflictCopy\x18\t \x01(\tR\fconflictCopy\x12\x1a\n" +
+	"\brejected\x18\n" +
+	" \x01(\bR\brejected\x12\"\n" +
+	"\frejectReason\x18\v \x01(\tR\frejectReason\"\xb0\x02\n" +
 	"\x14NoteRenameAckMessage\x12\x1a\n" +
 	"\blastTime\x18\x01 \x01(\x03R\blastTime\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1a\n" +
-	"\bpathHash\x18\x03 \x01(\tR\bpathHash\"b\n" +
+	"\bpathHash\x18\x03 \x01(\tR\bpathHash\x12\x12\n" +
+	"\x04opId\x18\x04 \x01(\tR\x04opId\x12\x10\n" +
+	"\x03rev\x18\x05 \x01(\x03R\x03rev\x12\x10\n" +
+	"\x03sha\x18\x06 \x01(\tR\x03sha\x12\x16\n" +
+	"\x06merged\x18\a \x01(\bR\x06merged\x12\x18\n" +
+	"\acontent\x18\b \x01(\tR\acontent\x12\"\n" +
+	"\fconflictCopy\x18\t \x01(\tR\fconflictCopy\x12\x1a\n" +
+	"\brejected\x18\n" +
+	" \x01(\bR\brejected\x12\"\n" +
+	"\frejectReason\x18\v \x01(\tR\frejectReason\"\xb0\x02\n" +
 	"\x14NoteDeleteAckMessage\x12\x1a\n" +
 	"\blastTime\x18\x01 \x01(\x03R\blastTime\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1a\n" +
-	"\bpathHash\x18\x03 \x01(\tR\bpathHash\"\xcd\x02\n" +
+	"\bpathHash\x18\x03 \x01(\tR\bpathHash\x12\x12\n" +
+	"\x04opId\x18\x04 \x01(\tR\x04opId\x12\x10\n" +
+	"\x03rev\x18\x05 \x01(\x03R\x03rev\x12\x10\n" +
+	"\x03sha\x18\x06 \x01(\tR\x03sha\x12\x16\n" +
+	"\x06merged\x18\a \x01(\bR\x06merged\x12\x18\n" +
+	"\acontent\x18\b \x01(\tR\acontent\x12\"\n" +
+	"\fconflictCopy\x18\t \x01(\tR\fconflictCopy\x12\x1a\n" +
+	"\brejected\x18\n" +
+	" \x01(\bR\brejected\x12\"\n" +
+	"\frejectReason\x18\v \x01(\tR\frejectReason\"\xcd\x02\n" +
 	"\x0fFileSyncRequest\x12\x18\n" +
 	"\acontext\x18\x01 \x01(\tR\acontext\x12\x14\n" +
 	"\x05vault\x18\x02 \x01(\tR\x05vault\x12\x1a\n" +

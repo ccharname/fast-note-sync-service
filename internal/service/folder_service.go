@@ -251,7 +251,11 @@ func (s *folderService) DeleteTree(ctx context.Context, uid int64, params *dto.F
 		n.Action = domain.NoteActionDelete
 		n.Rename = 0
 		n.UpdatedTimestamp = now
-		if err := s.noteRepo.UpdateDelete(ctx, n, uid); err != nil {
+		// lucky-v2: take the note lock around the write
+		unlockNote := lockRecover(ctx, noteLockKey(uid, vaultID, n.PathHash))
+		err := s.noteRepo.UpdateDelete(ctx, n, uid)
+		unlockNote()
+		if err != nil {
 			return nil, code.ErrorDBQuery.WithDetails(err.Error())
 		}
 		if s.syncLogService != nil {

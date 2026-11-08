@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
+	"github.com/haierkeys/fast-note-sync-service/internal/service"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 
@@ -31,6 +32,8 @@ type HealthResponse struct {
 	Version  string  `json:"version"`  // Service version number // 服务版本号
 	Uptime   float64 `json:"uptime"`   // Uptime (seconds) // 运行时间（秒）
 	Database string  `json:"database"` // "connected" or "error" // "connected" 或 "error"
+	// lucky-v2: serverMerge counters (reasons, lock wait, queue overflow/backlog)
+	Merge map[string]any `json:"merge,omitempty"`
 }
 
 // Check health check interface
@@ -46,6 +49,7 @@ func (h *HealthHandler) Check(c *gin.Context) {
 		Version:  h.App.Version().Version,
 		Uptime:   time.Since(h.App.StartTime).Seconds(),
 		Database: "connected",
+		Merge:    mergeHealth(),
 	}
 
 	// Check database connection
@@ -58,4 +62,12 @@ func (h *HealthHandler) Check(c *gin.Context) {
 	}
 
 	pkgapp.NewResponse(c).ToResponse(code.Success.WithData(response))
+}
+
+func mergeHealth() map[string]any {
+	m := service.MergeStats()
+	m["queueOverflow"] = pkgapp.OrderedStats.Overflow.Load()
+	m["queueMaxBacklog"] = pkgapp.OrderedStats.MaxBacklog.Load()
+	m["historyDropped"] = service.HistoryDropped.Load()
+	return m
 }
